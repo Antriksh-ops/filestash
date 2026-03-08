@@ -1,0 +1,14 @@
+{
+  "name": "filedrop-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev:signaling": "cd apps/signaling && npm run dev",
+    "dev:web": "cd apps/web && npm run dev",
+    "dev": "concurrently \"npm run dev:signaling\" \"npm run dev:web\"",
+    "install:all": "npm install && cd apps/signaling && npm install && cd ../web && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
