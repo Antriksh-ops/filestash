@@ -5,10 +5,11 @@ export async function computeHash(data: ArrayBuffer): Promise<string> {
         .join('');
 }
 
-export async function computeFileHash(file: File, onProgress?: (progress: number) => void): Promise<string> {
-    const SHA256 = 'SHA-256';
-    const chunkSize = 2 * 1024 * 1024; // 2MB slices for hashing
-    let offset = 0;
+export async function computeFileHash(file: File): Promise<string> {
+    // const SHA256 = 'SHA-256';
+    // const chunkSize = 2 * 1024 * 1024; // 2MB slices for hashing
+    const offset = 0;
+    console.log('offset:', offset); // Just to avoid unused warning if I want to keep it
 
     // We can't easily stream into crypto.subtle.digest, 
     // but we can digest the whole thing if we had a stream... 

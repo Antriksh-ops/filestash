@@ -16,7 +16,7 @@ export default function Home() {
   const [isTransferStarted, setIsTransferStarted] = React.useState(false);
   const [showFileList, setShowFileList] = React.useState(false);
 
-  const totalBatchSize = React.useMemo(() => files.reduce((acc, f) => acc + f.size, 0), [files]);
+  // const totalBatchSize = React.useMemo(() => files.reduce((acc, f) => acc + f.size, 0), [files]);
 
   const [eta, setEta] = React.useState<string | null>(null);
 
@@ -27,7 +27,7 @@ export default function Home() {
   const lastUiUpdateRef = React.useRef(0);
   const lastFeedbackRef = React.useRef(0);
 
-  const sendDataRef = React.useRef<(data: any) => boolean>(() => false);
+  const sendDataRef = React.useRef<(data: string | ArrayBuffer) => boolean>(() => false);
   const sharedKeyRef = React.useRef<CryptoKey | null>(null);
   const isRelayActiveRef = React.useRef(false);
 
@@ -70,13 +70,13 @@ export default function Home() {
   const { sendData, dataChannel, channelState, waitForBuffer, sharedKey, isRelayActive } = useWebRTC({
     sessionId: sessionId || '',
     isSender: files.length > 0,
-    onDataChannelMessage: (data: any) => onMessage(data),
+    onDataChannelMessage: (data: string | ArrayBuffer) => onMessage(data),
     onConnectionStateChange,
   });
 
   const writableRef = React.useRef<FileSystemWritableFileStream | null>(null);
 
-  const onMessage = React.useCallback(async (data: any) => {
+  const onMessage = React.useCallback(async (data: string | ArrayBuffer) => {
     if (typeof data === 'string') {
       const message = JSON.parse(data);
       if (message.type === 'batch-metadata') {
@@ -92,7 +92,7 @@ export default function Home() {
         // Try to get a writable stream for the first file
         if ('showSaveFilePicker' in window && message.files.length > 0) {
           try {
-            const handle = await (window as any).showSaveFilePicker({
+            const handle = await (window as Window & { showSaveFilePicker: (options?: { suggestedName?: string }) => Promise<FileSystemFileHandle> }).showSaveFilePicker({
               suggestedName: message.files[0].name,
             });
             writableRef.current = await handle.createWritable();
@@ -157,7 +157,7 @@ export default function Home() {
         console.error('Decryption failed:', e);
       }
     }
-  }, [batchMetadata, files, updateProgressUi, sharedKey]);
+  }, [batchMetadata, files.length, updateProgressUi, sharedKey]);
 
   React.useEffect(() => {
     sendDataRef.current = sendData;
@@ -170,7 +170,7 @@ export default function Home() {
     if (isInitiator && dataChannel?.readyState === 'open') {
       try {
         sendData(JSON.stringify({ type: 'cancel' }));
-      } catch (e) { }
+      } catch { }
     }
     setFiles([]);
     setBatchMetadata(null);
@@ -197,7 +197,7 @@ export default function Home() {
       setSessionId(sid);
       setStatus('receiving');
     }
-  }, []);
+  }, [files.length, sessionId]);
 
   const handleFileSelect = async (selectedFiles: File[]) => {
     isCancelledRef.current = false;
@@ -308,7 +308,7 @@ export default function Home() {
       setEta(null);
       setProgress(100);
     }
-  }, [files, sendData, waitForBuffer, updateProgressUi]);
+  }, [files, sendData, waitForBuffer, updateProgressUi, sharedKey]);
 
   React.useEffect(() => {
     if (status === 'sending' && files.length > 0 && channelState === 'open' && isTransferStarted) {
