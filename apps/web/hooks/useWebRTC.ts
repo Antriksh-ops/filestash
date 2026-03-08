@@ -158,6 +158,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
             // 2. Setup WebSocket
             const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_URL || 'ws://localhost:8080';
+            console.log('DEBUG: Initializing WebRTC with signaling URL:', signalingUrl);
             const socket = new WebSocket(`${signalingUrl}?sessionId=${sessionId}`);
             socketRef.current = socket;
 

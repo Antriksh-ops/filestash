@@ -208,6 +208,7 @@ export default function Home() {
       const signalingUrl = (process.env.NEXT_PUBLIC_SIGNALING_URL || 'ws://localhost:8080')
         .replace('ws://', 'http://')
         .replace('wss://', 'https://');
+      console.log('DEBUG: Calculated signaling HTTP API URL:', signalingUrl, 'from env:', process.env.NEXT_PUBLIC_SIGNALING_URL || 'UNDEFINED (falling back to localhost)');
       const response = await fetch(`${signalingUrl}/session/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -247,7 +248,13 @@ export default function Home() {
           body: JSON.stringify(manifest)
         });
         console.log('Manifest fully synchronized');
-      })().catch((e: Error) => console.error('Background hashing failed:', e));
+      })().catch((e: Error) => {
+        console.error('Background hashing/sync failed:', e);
+        // Alert if it fails due to localhost fallback
+        if (signalingUrl.includes('localhost')) {
+          console.warn('WARNING: Still using localhost signaling! Ensure NEXT_PUBLIC_SIGNALING_URL is set in Vercel.');
+        }
+      });
 
     } catch (e: unknown) {
       console.error('Failed to create session:', e);
