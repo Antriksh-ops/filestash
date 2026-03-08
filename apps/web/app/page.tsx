@@ -153,11 +153,11 @@ export default function Home() {
             setProgress(100);
           }
         }
-      } catch (e) {
+      } catch (e: unknown) {
         console.error('Decryption failed:', e);
       }
     }
-  }, [batchMetadata, files.length, updateProgressUi, sharedKey]);
+  }, [batchMetadata, files, updateProgressUi]);
 
   React.useEffect(() => {
     sendDataRef.current = sendData;
@@ -244,9 +244,9 @@ export default function Home() {
           body: JSON.stringify(manifest)
         });
         console.log('Manifest fully synchronized');
-      })().catch(e => console.error('Background hashing failed:', e));
+      })().catch((e: Error) => console.error('Background hashing failed:', e));
 
-    } catch (e) {
+    } catch (e: unknown) {
       console.error('Failed to create session:', e);
       // Fallback to local generation if server fails
       const sid = Math.random().toString(36).substring(2, 8).toUpperCase();

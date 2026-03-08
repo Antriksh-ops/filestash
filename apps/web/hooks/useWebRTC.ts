@@ -9,7 +9,7 @@ import {
 interface WebRTCOptions {
     sessionId: string;
     isSender: boolean;
-    onDataChannelMessage?: (data: any) => void;
+    onDataChannelMessage?: (data: string | ArrayBuffer) => void;
     onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
 }
 
@@ -44,7 +44,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         connectionStateHandlerRef.current = onConnectionStateChange;
     }, [onConnectionStateChange]);
 
-    const sendSignaling = useCallback((msg: any) => {
+    const sendSignaling = useCallback((msg: unknown) => {
         const json = JSON.stringify(msg);
         if (socketRef.current?.readyState === WebSocket.OPEN) {
             socketRef.current.send(json);
@@ -93,7 +93,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         });
     }, [setupDataChannel, sendSignaling]);
 
-    const handleSignalingMessage = useCallback(async (message: any) => {
+    const handleSignalingMessage = useCallback(async (message: { type?: string; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[] }) => {
         if (!pcRef.current) return;
 
         // Handle Public Key Exchange
@@ -241,7 +241,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         });
     }, [dataChannel, isRelayActive]);
 
-    const sendData = useCallback((data: any) => {
+    const sendData = useCallback((data: string | ArrayBuffer | Blob | ArrayBufferView) => {
         if (isRelayActive && socketRef.current?.readyState === WebSocket.OPEN) {
             socketRef.current.send(data);
             return true;
@@ -249,7 +249,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
         if (dataChannel && dataChannel.readyState === 'open') {
             try {
-                dataChannel.send(data);
+                dataChannel.send(data as any);
                 return true;
             } catch (e) {
                 console.error('Send error:', e);
