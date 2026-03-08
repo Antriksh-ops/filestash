@@ -2,6 +2,10 @@
   "name": "filedrop-monorepo",
   "version": "1.0.0",
   "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev:signaling": "cd apps/signaling && npm run dev",
     "dev:web": "cd apps/web && npm run dev",
