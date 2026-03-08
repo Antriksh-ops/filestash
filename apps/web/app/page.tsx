@@ -370,8 +370,8 @@ export default function Home() {
 
             <div className="bg-white border-4 border-black rounded-3xl p-8 shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] hover:shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] transition-all">
               <h4 className="text-black font-black uppercase text-lg mb-6 tracking-tight">Access an existing bridge</h4>
-              <form onSubmit={handleJoinByCode} className="flex gap-6">
-                <div className="flex-1 relative group">
+              <form onSubmit={handleJoinByCode} className="flex flex-col gap-6">
+                <div className="relative group">
                   <input
                     type="text"
                     maxLength={6}
@@ -392,7 +392,7 @@ export default function Home() {
                 </div>
                 <button
                   type="submit"
-                  className="px-12 py-4 bg-violet-400 text-black font-black uppercase text-xl rounded-2xl border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] hover:bg-violet-300 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all"
+                  className="w-full py-4 bg-violet-400 text-black font-black uppercase text-xl rounded-2xl border-4 border-black shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] hover:bg-violet-300 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all"
                 >
                   Join
                 </button>

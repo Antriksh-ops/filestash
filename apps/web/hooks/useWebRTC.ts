@@ -224,7 +224,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             pcRef.current = null;
             socketRef.current = null;
         };
-    }, [sessionId, isSender, handleSignalingMessage, createOffer, setupDataChannel, sendSignaling, channelState]);
+    }, [sessionId, isSender, handleSignalingMessage, createOffer, setupDataChannel, sendSignaling]);
 
     const waitForBuffer = useCallback(() => {
         if (isRelayActive) return Promise.resolve(); // WS relay uses different flow control
