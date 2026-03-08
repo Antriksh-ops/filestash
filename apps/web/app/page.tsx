@@ -205,7 +205,9 @@ export default function Home() {
 
     // Spec: Call POST /session/create
     try {
-      const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_URL_HTTP || 'http://localhost:8080';
+      const signalingUrl = (process.env.NEXT_PUBLIC_SIGNALING_URL || 'ws://localhost:8080')
+        .replace('ws://', 'http://')
+        .replace('wss://', 'https://');
       const response = await fetch(`${signalingUrl}/session/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -232,6 +234,7 @@ export default function Home() {
             if (chunk.chunk_id % 10 === 0) {
               await fetch(`${signalingUrl}/session/${data.sessionId}/manifest`, {
                 method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(manifest)
               });
             }
