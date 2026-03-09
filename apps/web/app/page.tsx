@@ -308,19 +308,19 @@ export default function Home() {
             manifest[chunk.chunk_id] = chunk.hash;
             // Progressive manifest updates
             if (chunk.chunk_id % 10 === 0) {
-              await fetch(`${signalingUrl}/session/${data.sessionId}/manifest`, {
-                method: 'PUT',
+              await fetch(`/api/manifest`, {
+                method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(manifest)
+                body: JSON.stringify({ sessionId: data.sessionId, manifest })
               });
             }
           }
         }
         // Final manifest update
-        await fetch(`${signalingUrl}/session/${data.sessionId}/manifest`, {
-          method: 'PUT',
+        await fetch(`/api/manifest`, {
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(manifest)
+          body: JSON.stringify({ sessionId: data.sessionId, manifest })
         });
         console.log('Manifest fully synchronized');
       })().catch((e: Error) => {
