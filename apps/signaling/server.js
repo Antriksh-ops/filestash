@@ -6,6 +6,14 @@ const Redis = require('ioredis');
 const PORT = process.env.PORT || 8080;
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 
+// Anti-abuse: Limits
+const MAX_RELAY_BYTES_PER_SESSION = 1024 * 1024 * 1024; // 1GB Hard Cap
+const MAX_SESSIONS_PER_IP_WINDOW = 5; // Sessions per hour
+const RATE_LIMIT_WINDOW = 60 * 60 * 1000; // 1 Hour
+
+const ipSessionTracker = new Map(); // ip -> { count, startTime }
+const relayByteTracker = new Map(); // sessionId -> totalBytes
+
 // Redis client for session metadata
 let redis = null;
 try {
@@ -41,9 +49,30 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && req.url === '/session/create') {
+        const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        const now = Date.now();
+
+        if (!ipSessionTracker.has(ip)) {
+            ipSessionTracker.set(ip, { count: 0, startTime: now });
+        }
+
+        const tracking = ipSessionTracker.get(ip);
+        if (now - tracking.startTime > RATE_LIMIT_WINDOW) {
+            tracking.count = 0;
+            tracking.startTime = now;
+        }
+
+        if (tracking.count >= MAX_SESSIONS_PER_IP_WINDOW) {
+            console.warn(`Rate limit exceeded for IP ${ip}`);
+            res.writeHead(429, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Rate limit exceeded. Try again in an hour.' }));
+            return;
+        }
+
         let body = '';
         req.on('data', chunk => body += chunk);
         req.on('end', async () => {
+            tracking.count++;
             try {
                 const metadata = JSON.parse(body);
                 const sessionId = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -161,6 +190,19 @@ wss.on('connection', (ws, req) => {
 
     ws.on('message', (data, isBinary) => {
         if (isBinary) {
+            // RELAY fallback bandwidth tracking
+            const currentBytes = relayByteTracker.get(sessionId) || 0;
+            const newTotal = currentBytes + data.length;
+
+            if (newTotal > MAX_RELAY_BYTES_PER_SESSION) {
+                console.warn(`Session ${sessionId} exceeded relay bandwidth cap. Terminating.`);
+                ws.send(JSON.stringify({ type: 'error', message: 'Relay bandwidth limit exceeded' }));
+                ws.close(1008, 'Bandwidth limit exceeded');
+                return;
+            }
+
+            relayByteTracker.set(sessionId, newTotal);
+
             // RELAY fallback: broadcast binary data to all OTHER peers in session
             const peers = sessionPeers.get(sessionId);
             if (peers) {
@@ -193,9 +235,11 @@ wss.on('connection', (ws, req) => {
     });
 
     ws.on('close', () => {
-        sessionPeers.get(sessionId)?.delete(ws);
-        if (sessionPeers.get(sessionId)?.size === 0) {
+        const peersInSession = sessionPeers.get(sessionId);
+        peersInSession?.delete(ws);
+        if (!peersInSession || peersInSession.size === 0) {
             sessionPeers.delete(sessionId);
+            relayByteTracker.delete(sessionId); // Cleanup tracker when session dies
         }
         console.log(`Peer ${peerId} disconnected from session ${sessionId}`);
     });

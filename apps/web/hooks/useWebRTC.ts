@@ -5,6 +5,7 @@ import {
     importPublicKey,
     deriveAESKey
 } from '../lib/crypto';
+import { CONFIG } from '../lib/config';
 
 interface WebRTCOptions {
     sessionId: string;
@@ -171,7 +172,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             myKeyPairRef.current = await generateECDHKeyPair();
 
             // 2. Setup WebSocket
-            const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_URL || 'wss://filestash-z8go.onrender.com';
+            const signalingUrl = CONFIG.SIGNALING_URL;
             console.log('DEBUG: Initializing WebRTC with signaling URL:', signalingUrl);
             const socket = new WebSocket(`${signalingUrl}?sessionId=${sessionId}`);
             socketRef.current = socket;

@@ -6,6 +6,13 @@ import DropZone from '../components/DropZone';
 import { useWebRTC } from '../hooks/useWebRTC';
 import { getFileChunks } from '../lib/chunker';
 import { computeHash, computeFileHash, encryptChunk, decryptChunk } from '../lib/crypto';
+import { CONFIG } from '../lib/config';
+
+// Add type for WakeLock
+interface WakeLockSentinel {
+  release(): Promise<void>;
+  onrelease: ((this: WakeLockSentinel, ev: Event) => any) | null;
+}
 
 export default function Home() {
   const [sessionId, setSessionId] = React.useState<string | null>(null);
@@ -18,7 +25,28 @@ export default function Home() {
 
   // const totalBatchSize = React.useMemo(() => files.reduce((acc, f) => acc + f.size, 0), [files]);
 
-  const [eta, setEta] = React.useState<string | null>(null);
+  const [eta, setEta] = React.useState<number | null>(null);
+  const wakeLockRef = React.useRef<WakeLockSentinel | null>(null);
+
+  // Manage Wake Lock
+  const requestWakeLock = async () => {
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+        console.log('Wake Lock active - Screen will not sleep');
+      } catch (err) {
+        console.error(`${err.name}, ${err.message}`);
+      }
+    }
+  };
+
+  const releaseWakeLock = () => {
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release();
+      wakeLockRef.current = null;
+      console.log('Wake Lock released');
+    }
+  };
 
   // Progress tracking (Re-synced with REFs for accuracy)
   const totalSentRef = React.useRef(0);
@@ -57,7 +85,7 @@ export default function Home() {
         if (timeRemaining > 0 && isFinite(timeRemaining)) {
           const mins = Math.floor(timeRemaining / 60);
           const secs = Math.floor(timeRemaining % 60);
-          setEta(`${mins}m ${secs}s remaining`);
+          setEta(timeRemaining); // Store raw seconds for ETA
         }
       }
     }
@@ -66,6 +94,15 @@ export default function Home() {
   const onConnectionStateChange = React.useCallback((state: RTCPeerConnectionState) => {
     console.log('PC State:', state);
   }, []);
+
+  const onTransferStart = async () => {
+    startTimeRef.current = Date.now(); // Use startTimeRef for consistency
+    await requestWakeLock();
+  };
+
+  const onTransferEnd = () => {
+    releaseWakeLock();
+  };
 
   const { sendData, dataChannel, channelState, waitForBuffer, sharedKey, isRelayActive } = useWebRTC({
     sessionId: sessionId || '',
@@ -205,12 +242,9 @@ export default function Home() {
 
     // Spec: Call POST /session/create
     try {
-      const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_URL_HTTP ||
-        (process.env.NEXT_PUBLIC_SIGNALING_URL || 'ws://localhost:8080')
-          .replace('ws://', 'http://')
-          .replace('wss://', 'https://');
+      const signalingUrl = CONFIG.SIGNALING_URL_HTTP;
 
-      console.log('DEBUG: Calculated signaling HTTP API URL:', signalingUrl, 'source:', process.env.NEXT_PUBLIC_SIGNALING_URL_HTTP ? 'env_http' : (process.env.NEXT_PUBLIC_SIGNALING_URL ? 'env_ws' : 'fallback_localhost'));
+      console.log('DEBUG: Calculated signaling HTTP API URL:', signalingUrl, 'source: config_lib');
       const response = await fetch(`${signalingUrl}/session/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -370,17 +404,17 @@ export default function Home() {
         <h1 className="text-7xl font-black text-black tracking-tighter uppercase drop-shadow-[4px_4px_0px_#fde047]">
           FILEDROP
         </h1>
-        <p className="text-zinc-600 text-xl font-bold uppercase tracking-widest">
-          Universal intelligent P2P transfer
-        </p>
+        <h2 className="text-zinc-600 text-xl font-bold uppercase tracking-widest mt-4">
+          Unlimited P2P Magic • No Limits • No Cloud
+        </h2>
       </div>
 
       <div className="w-full max-w-5xl space-y-8 flex-1 flex flex-col items-center justify-start min-h-[850px] transition-all duration-500">
         {status === 'idle' ? (
-          <div className="w-full space-y-8 animate-in fade-in zoom-in duration-500">
+          <div className="w-full space-y-12 animate-in fade-in zoom-in slide-in-from-top-4 duration-700 ease-out">
             <DropZone onFileSelect={handleFileSelect} />
 
-            <div className="bg-white border-4 border-black rounded-3xl p-8 shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] hover:shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] transition-all">
+            <div className="bg-white border-4 border-black rounded-[2.5rem] p-10 shadow-[12px_12px_0px_0px_rgba(0,0,0,1)] hover:shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] hover:-translate-y-1 transition-all duration-300">
               <h4 className="text-black font-black uppercase text-lg mb-6 tracking-tight">Access an existing bridge</h4>
               <form onSubmit={handleJoinByCode} className="flex flex-col gap-6">
                 <div className="relative group">
@@ -556,18 +590,18 @@ export default function Home() {
         )}
       </div>
 
-      <div className="grid grid-cols-3 gap-8 w-full max-w-2xl px-4">
-        <div className="p-4 bg-yellow-300 border-2 border-black rounded-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] text-center">
-          <p className="text-black font-black text-sm uppercase">Batch Mode</p>
-          <p className="text-black font-bold text-[10px] uppercase opacity-60">Multi-file sync</p>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-8 w-full max-w-4xl px-4 mt-8 pb-12">
+        <div className="p-8 bg-yellow-300 border-4 border-black rounded-3xl shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] text-center space-y-2">
+          <p className="text-black font-black text-xl uppercase">Unlimited</p>
+          <p className="text-black font-bold text-xs uppercase opacity-70">Share 1TB+ as easily as 1MB. No server limits, ever.</p>
         </div>
-        <div className="p-4 bg-violet-400 border-2 border-black rounded-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] text-center">
-          <p className="text-black font-black text-sm uppercase">Unlimited</p>
-          <p className="text-black font-bold text-[10px] uppercase opacity-60">100GB+ support</p>
+        <div className="p-8 bg-violet-400 border-4 border-black rounded-3xl shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] text-center space-y-2">
+          <p className="text-black font-black text-xl uppercase">Ultra Private</p>
+          <p className="text-black font-bold text-xs uppercase opacity-70">End-to-End Encrypted. Files never touch any cloud storage.</p>
         </div>
-        <div className="p-4 bg-emerald-400 border-2 border-black rounded-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] text-center">
-          <p className="text-black font-black text-sm uppercase">P2P Core</p>
-          <p className="text-black font-bold text-[10px] uppercase opacity-60">No server lag</p>
+        <div className="p-8 bg-emerald-400 border-4 border-black rounded-3xl shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] text-center space-y-2">
+          <p className="text-black font-black text-xl uppercase">Blazing Fast</p>
+          <p className="text-black font-bold text-xs uppercase opacity-70">Direct P2P core. The fastest way to move data locally or globally.</p>
         </div>
       </div>
 
