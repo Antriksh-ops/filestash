@@ -23,6 +23,9 @@ const RTC_CONFIG: RTCConfiguration = {
         { urls: 'stun:stun2.l.google.com:19302' },
         { urls: 'stun:stun3.l.google.com:19302' },
         { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' },
+        // Add TURN servers here for better reliability across symmetric NATs
+        // { urls: 'turn:YOUR_TURN_SERVER', username: '...', credential: '...' }
     ],
     iceCandidatePoolSize: 10,
     bundlePolicy: 'max-bundle',
@@ -71,17 +74,13 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         }
     }, []);
 
-    const startRelayTimeout = useCallback(() => {
-        if (relayTimeoutRef.current) return;
-        console.log('Handshake started, arming relay fallback (60s)...');
-        relayTimeoutRef.current = setTimeout(() => {
-            if (channelState !== 'open') {
-                console.log('P2P taking too long, activating relay fallback (60s)...');
-                setIsRelayActive(true);
-                setChannelState('open');
-            }
-        }, 60000);
-    }, [channelState]);
+    const activateRelay = useCallback(() => {
+        console.log('MANUAL RELAY ACTIVATION: User consented to relay via server.');
+        setIsRelayActive(true);
+        setChannelState('open');
+        if (relayTimeoutRef.current) clearTimeout(relayTimeoutRef.current);
+        sendSignaling({ type: 'force-relay' });
+    }, [sendSignaling]);
 
     const setupDataChannel = useCallback((dc: RTCDataChannel) => {
         dc.binaryType = 'arraybuffer';
@@ -135,8 +134,18 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         });
     }, [setupDataChannel, sendSignaling]);
 
-    const handleSignalingMessage = useCallback(async (message: { type?: string; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[] }) => {
+    const handleSignalingMessage = useCallback(async (message: { type?: string; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[]; action?: string }) => {
         if (!pcRef.current) return;
+
+        console.log(`[SIGNALLING] Received message: ${message.type || 'unknown'}`, message);
+
+        if (message.type === 'force-relay' || message.action === 'force-relay') {
+            console.log('Received force-relay signal from peer');
+            setIsRelayActive(true);
+            setChannelState('open');
+            if (relayTimeoutRef.current) clearTimeout(relayTimeoutRef.current);
+            return;
+        }
 
         // Handle Public Key Exchange
         if (message.publicKey && myKeyPairRef.current) {
@@ -153,10 +162,9 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
         if (message.type === 'peer_joined' && isSender) {
             console.log('Peer joined, re-initiating offer');
-            startRelayTimeout();
             createOffer();
         } else if (message.offer && !isSender) {
-            startRelayTimeout();
+            console.log('Received WebRTC Offer, creating Answer...');
             await pcRef.current.setRemoteDescription(new RTCSessionDescription(message.offer));
             const answer = await pcRef.current.createAnswer();
             await pcRef.current.setLocalDescription(answer);
@@ -191,8 +199,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 pendingCandidates.current.push(message.candidate);
             }
         } else {
-            // RELAY SYNC FIX: Forward any unknown messages (like batch-metadata/start-transfer) 
-            // to the application message handler. This ensures relay mode handles sync signals.
+            // Forward any other messages (like errors or custom sync signals)
+            // to the application message handler.
             messageRef.current?.(message);
         }
     }, [isSender, createOffer, sendSignaling]);
@@ -234,17 +242,29 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
             pc.onicecandidate = (event) => {
                 if (event.candidate) {
+                    const type = event.candidate.type || (event.candidate.candidate.includes('typ relay') ? 'relay' : event.candidate.candidate.includes('typ srflx') ? 'srflx' : 'host');
+                    console.log(`[P2P] Local ICE Candidate (${type}):`, event.candidate.candidate);
                     sendSignaling({ candidate: event.candidate });
                 }
             };
 
             pc.onconnectionstatechange = () => {
-                connectionStateHandlerRef.current?.(pc.connectionState);
-                if (pc.connectionState === 'failed') {
-                    console.warn('P2P connection failed, checking relay...');
-                    setIsRelayActive(true);
-                    setChannelState('open'); // Fake open for relay
+                console.log(`[P2P] Connection state changed: ${pc.connectionState}`);
+                if (pc.iceConnectionState) {
+                    console.log(`[P2P] ICE Connection state: ${pc.iceConnectionState}`);
                 }
+                connectionStateHandlerRef.current?.(pc.connectionState);
+
+                if (pc.connectionState === 'failed') {
+                    console.error('[P2P] CONNECTION FAILED. Possible reasons: Symmetric NAT on both ends, firewall blocks, or no STUN/TURN path.');
+                }
+                if (pc.connectionState === 'disconnected') {
+                    console.warn('[P2P] Peer disconnected.');
+                }
+            };
+
+            pc.onicegatheringstatechange = () => {
+                console.log(`[P2P] ICE Gathering state: ${pc.iceGatheringState}`);
             };
 
             if (isSender) {
@@ -300,6 +320,13 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         return false;
     }, [dataChannel, isRelayActive]);
 
+    const reconnectP2P = useCallback(() => {
+        console.log('[P2P] Manual Re-Handshake requested...');
+        if (isSender) {
+            createOffer();
+        }
+    }, [isSender, createOffer]);
+
     return {
         peerConnection,
         dataChannel,
@@ -308,6 +335,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         waitForBuffer,
         sharedKey,
         isRelayActive,
+        activateRelay,
+        reconnectP2P,
         signalingState: socketRef.current?.readyState ?? WebSocket.CLOSED
     };
 }

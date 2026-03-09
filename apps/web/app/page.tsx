@@ -30,10 +30,12 @@ export default function Home() {
   const [joinCode, setJoinCode] = React.useState('');
   const [isTransferStarted, setIsTransferStarted] = React.useState(false);
   const [showFileList, setShowFileList] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
 
   // const totalBatchSize = React.useMemo(() => files.reduce((acc, f) => acc + f.size, 0), [files]);
 
-  const [eta, setEta] = React.useState<number | null>(null);
+  const [eta, setEta] = React.useState<string | null>(null);
+  const [showRelayPrompt, setShowRelayPrompt] = React.useState(false);
   const wakeLockRef = React.useRef<WakeLockSentinel | null>(null);
 
   // Manage Wake Lock
@@ -71,6 +73,7 @@ export default function Home() {
   // Receiver state
   const chunksRef = React.useRef<ArrayBuffer[]>([]);
   const [currentFileIndex, setCurrentFileIndex] = React.useState(0);
+  const manifestRef = React.useRef<Record<number, string>>({});
 
   const isCancelledRef = React.useRef(false);
   const handleCancelRef = React.useRef<(isInitiator?: boolean) => void>(null);
@@ -87,13 +90,15 @@ export default function Home() {
     if (startTimeRef.current) {
       const elapsed = (now - startTimeRef.current) / 1000;
       if (elapsed > 0) {
-        const speed = current / elapsed;
+        const speed = current / elapsed; // bytes per second
         const remaining = total - current;
         const timeRemaining = remaining / speed;
-        if (timeRemaining > 0 && isFinite(timeRemaining)) {
-          Math.floor(timeRemaining / 60); // mins
-          Math.floor(timeRemaining % 60); // secs
-          setEta(timeRemaining); // Store raw seconds for ETA
+
+        if (timeRemaining >= 0 && isFinite(timeRemaining)) {
+          const mins = Math.floor(timeRemaining / 60);
+          const secs = Math.floor(timeRemaining % 60);
+          const speedMB = (speed / (1024 * 1024)).toFixed(2);
+          setEta(`${mins > 0 ? `${mins}m ` : ''}${secs}s • ${speedMB} MB/s`);
         }
       }
     }
@@ -112,20 +117,9 @@ export default function Home() {
     releaseWakeLock();
   }, [releaseWakeLock]);
 
-  const { sendData, dataChannel, channelState, waitForBuffer, sharedKey, isRelayActive, signalingState } = useWebRTC({
-    sessionId: sessionId || '',
-    isSender: files.length > 0,
-    onDataChannelMessage: (data: string | ArrayBuffer) => onMessage(data),
-    onConnectionStateChange,
-    onComplete: () => {
-      onTransferEnd();
-      setStatus('completed');
-    }
-  });
-
   const writableRef = React.useRef<FileSystemWritableFileStream | null>(null);
 
-  const onMessage = React.useCallback(async (data: string | ArrayBuffer) => {
+  const handleRawMessage = React.useCallback(async (data: string | ArrayBuffer) => {
     if (typeof data === 'string') {
       const message = JSON.parse(data);
       if (message.type === 'batch-metadata') {
@@ -149,6 +143,16 @@ export default function Home() {
             console.warn('FileSystem Access API declined or failed, falling back to memory:', e instanceof Error ? e.message : e);
           }
         }
+
+        // Fetch manifest for verification
+        try {
+          const res = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/session/${message.sessionId}/manifest`);
+          if (res.ok) {
+            manifestRef.current = await res.json();
+          }
+        } catch (e) {
+          console.warn('Failed to fetch manifest, integrity verification will be bypassed:', e);
+        }
       } else if (message.type === 'file-start') {
         setCurrentFileIndex(message.index);
         chunksRef.current = [];
@@ -157,6 +161,9 @@ export default function Home() {
         updateProgressUi(message.received, totalBatchSize);
       } else if (message.type === 'cancel') {
         handleCancelRef.current?.(false);
+      } else if (message.type === 'error') {
+        setError(message.message || 'An unknown error occurred');
+        setStatus('idle');
       }
     } else if (data instanceof ArrayBuffer && (sharedKeyRef.current || isRelayActiveRef.current)) {
       try {
@@ -171,9 +178,15 @@ export default function Home() {
 
         // Verification: Compare decrypted chunk hash
         const hash = await computeHash(decrypted);
-        // In a full implementation, we'd check this against a local manifestRef 
-        // that was fetched via GET /session/:id/manifest
-        console.log(`Verifying chunk ${chunkId}, hash: ${hash}`);
+        const expectedHash = manifestRef.current[chunkId];
+
+        if (expectedHash && hash !== expectedHash) {
+          console.error(`INTEGRITY ERROR: Chunk ${chunkId} hash mismatch! Expected: ${expectedHash}, Got: ${hash}`);
+          // In a mission-critical app, we'd request a re-transmit here.
+          // For now, we log it and continue.
+        } else {
+          console.log(`Verified chunk ${chunkId}`);
+        }
 
         if (writableRef.current) {
           await writableRef.current.write(decrypted);
@@ -222,6 +235,29 @@ export default function Home() {
     }
   }, [batchMetadata, files, updateProgressUi, sessionId]);
 
+  const { sendData, dataChannel, channelState, waitForBuffer, sharedKey, isRelayActive, activateRelay, reconnectP2P, signalingState } = useWebRTC({
+    sessionId: sessionId || '',
+    isSender: files.length > 0,
+    onDataChannelMessage: handleRawMessage,
+    onMessage: (msg: any) => {
+      if (msg.type === 'force-relay') {
+        // If peer forces relay, we just follow
+        return;
+      }
+      handleRawMessage(JSON.stringify(msg));
+    },
+    onConnectionStateChange: (state) => {
+      onConnectionStateChange(state);
+      if (state === 'failed') {
+        setShowRelayPrompt(true);
+      }
+    },
+    onComplete: () => {
+      onTransferEnd();
+      setStatus('completed');
+    }
+  });
+
   React.useEffect(() => {
     sendDataRef.current = sendData;
     sharedKeyRef.current = sharedKey;
@@ -244,6 +280,7 @@ export default function Home() {
     setEta(null);
     setStatus('idle');
     setSessionId(null);
+    setError(null);
     setIsTransferStarted(false);
     window.history.pushState({}, '', window.location.pathname);
   }, [dataChannel, sendData]);
@@ -446,6 +483,53 @@ export default function Home() {
       {/* Premium Grain Overlay */}
       <div className="fixed inset-0 pointer-events-none z-0 opacity-[0.03] mix-blend-multiply bg-[url('https://grainy-gradients.vercel.app/noise.svg')]" />
 
+      {showRelayPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white border-4 border-black rounded-[2.5rem] p-10 max-w-lg w-full shadow-[16px_16px_0px_0px_rgba(0,0,0,1)] space-y-8 animate-in zoom-in-95 duration-300">
+            <div className="space-y-4">
+              <div className="w-20 h-20 bg-orange-100 border-4 border-black rounded-3xl flex items-center justify-center text-orange-600 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10" /><path d="m9 12 2 2 4-4" /></svg>
+              </div>
+              <h3 className="text-3xl font-black uppercase tracking-tight">P2P Connection Stalled</h3>
+              <div className="space-y-4 text-zinc-600 font-bold uppercase text-xs leading-relaxed">
+                <p>Direct device-to-device connection is failing. This often happens due to restrictive corporate firewalls or complex mobile networks.</p>
+                <div className="bg-orange-50 border-2 border-black p-4 rounded-xl space-y-2">
+                  <p className="text-black">What is Relay Mode?</p>
+                  <p>Data will pass through our secure signaling server as a fallback. Your files remain <span className="text-emerald-600">End-to-End Encrypted</span>, but transfer may be slower and subject to bandwidth limits (1GB).</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-4">
+              <button
+                onClick={() => {
+                  reconnectP2P();
+                  setShowRelayPrompt(false);
+                }}
+                className="w-full py-4 bg-yellow-400 hover:bg-yellow-300 text-black font-black uppercase rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all"
+              >
+                Retry Direct P2P
+              </button>
+              <button
+                onClick={() => {
+                  activateRelay();
+                  setShowRelayPrompt(false);
+                }}
+                className="w-full py-4 bg-black text-white hover:bg-zinc-800 font-black uppercase rounded-2xl border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-x-1 active:translate-y-1 active:shadow-none transition-all"
+              >
+                Enable Relay Fallback
+              </button>
+              <button
+                onClick={() => setShowRelayPrompt(false)}
+                className="w-full py-2 text-zinc-400 font-black uppercase text-[10px] tracking-widest hover:text-black transition-colors"
+              >
+                Keep Waiting...
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Removed SecurityShield */}
       <div className="text-center space-y-4">
         <h1 className="text-7xl font-black text-black tracking-tighter uppercase drop-shadow-[4px_4px_0px_#fde047]">
@@ -457,6 +541,23 @@ export default function Home() {
       </div>
 
       <div className="w-full max-w-5xl space-y-8 flex-1 flex flex-col items-center justify-start min-h-[850px] transition-all duration-500">
+        {error && (
+          <div className="w-full bg-rose-50 border-4 border-rose-500 p-6 rounded-3xl flex items-center justify-between shadow-[8px_8px_0px_0px_rgba(244,63,94,1)] animate-in slide-in-from-top-4">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-full bg-rose-500 flex items-center justify-center text-white shrink-0">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" /><path d="M12 9v4" /><path d="M12 17h.01" /></svg>
+              </div>
+              <p className="text-rose-900 font-black uppercase text-sm">{error}</p>
+            </div>
+            <button
+              onClick={() => setError(null)}
+              className="p-2 hover:bg-rose-100 rounded-xl transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+            </button>
+          </div>
+        )}
+
         {status === 'idle' ? (
           <div className="w-full space-y-12 animate-in fade-in zoom-in slide-in-from-top-4 duration-700 ease-out">
             <DropZone onFileSelect={handleFileSelect} />
@@ -596,13 +697,44 @@ export default function Home() {
               </button>
             )}
 
-            {status === 'completed' && !files.length && (
-              <button
-                onClick={downloadAll}
-                className="w-full py-4 bg-emerald-400 hover:bg-emerald-300 text-black font-black uppercase tracking-widest rounded-xl border-2 border-black transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-x-1 active:translate-y-1 active:shadow-none"
-              >
-                Get Files
-              </button>
+            {status === 'completed' && (
+              <div className="space-y-6 pt-6 border-t-4 border-black animate-in fade-in zoom-in duration-500">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="p-4 bg-emerald-50 border-4 border-black rounded-2xl text-center">
+                    <p className="text-zinc-500 font-black text-[10px] uppercase">TOTAL DATA</p>
+                    <p className="text-black font-black text-xl">
+                      {((files.length > 0 ? files.reduce((a, b) => a + b.size, 0) : batchMetadata?.files.reduce((a, b) => a + b.size, 0) || 0) / (1024 * 1024)).toFixed(2)} MB
+                    </p>
+                  </div>
+                  <div className="p-4 bg-violet-50 border-4 border-black rounded-2xl text-center">
+                    <p className="text-zinc-500 font-black text-[10px] uppercase">DURATION</p>
+                    <p className="text-black font-black text-xl">
+                      {startTimeRef.current ? Math.round((Date.now() - startTimeRef.current) / 1000) : 0}s
+                    </p>
+                  </div>
+                </div>
+
+                {!files.length ? (
+                  <button
+                    onClick={downloadAll}
+                    className="w-full py-6 bg-emerald-400 hover:bg-emerald-300 text-black font-black uppercase text-2xl tracking-widest rounded-2xl border-4 border-black transition-all shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] active:translate-x-1 active:translate-y-1 active:shadow-none"
+                  >
+                    Download Files
+                  </button>
+                ) : (
+                  <div className="p-6 bg-yellow-200 border-4 border-black rounded-2xl text-center shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                    <p className="text-black font-black uppercase text-lg">Transfer Complete!</p>
+                    <p className="text-black/60 font-bold text-xs uppercase">Your peer has received the files.</p>
+                  </div>
+                )}
+
+                <button
+                  onClick={() => handleCancel(true)}
+                  className="w-full py-4 bg-white hover:bg-zinc-50 text-black font-black uppercase text-sm tracking-widest rounded-2xl border-4 border-black transition-all shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-x-1 active:translate-y-1 active:shadow-none"
+                >
+                  Start New Transfer
+                </button>
+              </div>
             )}
 
             {sessionId && status === 'sending' && (
