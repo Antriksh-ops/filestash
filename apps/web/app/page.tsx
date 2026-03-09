@@ -661,7 +661,15 @@ export default function Home() {
                   SIGNALING: {signalingState === 1 ? 'ONLINE' : 'OFFLINE'}
                 </span>
                 <span className="text-black font-black uppercase text-[10px] tracking-widest bg-yellow-200 px-3 py-1 rounded-lg border-2 border-black">
-                  {status === 'completed' ? 'SUCCESS' : channelState === 'open' ? (status === 'sending' ? (isTransferStarted ? 'SENDING' : 'READY') : (receivedSizeRef.current > 0 ? 'RECEIVING' : 'WAITING FOR SENDER')) : (status === 'sending' ? 'WAITING FOR PEER' : 'CONNECTING...')}
+                  {status === 'completed'
+                    ? 'SUCCESS'
+                    : channelState === 'open'
+                      ? (status === 'sending'
+                        ? (isTransferStarted ? 'SENDING' : 'READY')
+                        : (receivedSizeRef.current > 0 ? 'RECEIVING' : 'WAITING FOR SENDER'))
+                      : (status === 'sending'
+                        ? (signalingState === WebSocket.OPEN ? 'WAITING FOR PEER' : 'INITIALIZING...')
+                        : 'CONNECTING...')}
                 </span>
                 {sharedKey && (
                   <span className="text-black font-black uppercase text-[10px] tracking-widest bg-emerald-400 px-3 py-1 rounded-lg border-2 border-black flex items-center gap-1">

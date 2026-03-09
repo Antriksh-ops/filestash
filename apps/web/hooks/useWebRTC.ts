@@ -25,11 +25,19 @@ const RTC_CONFIG: RTCConfiguration = {
         { urls: 'stun:stun3.l.google.com:19302' },
         { urls: 'stun:stun4.l.google.com:19302' },
         { urls: 'stun:global.stun.twilio.com:3478' },
-        // Add TURN servers here for better reliability across symmetric NATs
-        // { urls: 'turn:YOUR_TURN_SERVER', username: '...', credential: '...' }
+        // [IMPORTANT] Add TURN servers here for high reliability (e.g., across symmetric NATs/Firewalls)
+        // You can use a service like Metered.ca (Free Tier), Twilio, or self-hosted Coturn.
+        /*
+        { 
+          urls: 'turn:YOUR_TURN_DOMAIN:PORT', 
+          username: 'YOUR_USERNAME', 
+          credential: 'YOUR_PASSWORD' 
+        },
+        */
     ],
     iceCandidatePoolSize: 10,
     bundlePolicy: 'max-bundle',
+    iceTransportPolicy: 'all', // Ensure 'relay' candidates can be used
 };
 
 export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnectionStateChange, onMessage, onStalled, onComplete }: WebRTCOptions) {
@@ -178,7 +186,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         }
 
         if (message.type === 'peer_joined' && isSender) {
-            console.log('Peer joined, re-initiating offer');
+            console.log('Peer joined, re-initiating offer and starting stall timer');
+            startStallTimer(); // Only start the 15s timeout once we know a peer is actually listening
             createOffer();
         } else if (message.offer && !isSender) {
             console.log('Received WebRTC Offer, creating Answer...');
@@ -276,11 +285,11 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                     if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
                 }
 
-                if (pc.connectionState === 'failed') {
+                if (pc.connectionState === 'failed' || pc.iceConnectionState === 'failed') {
                     if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
                     console.error('[P2P] CONNECTION FAILED. Possible reasons: Symmetric NAT on both ends, firewall blocks, or no STUN/TURN path.');
                 }
-                if (pc.connectionState === 'disconnected') {
+                if (pc.connectionState === 'disconnected' || pc.iceConnectionState === 'disconnected') {
                     console.warn('[P2P] Peer disconnected.');
                 }
             };
@@ -290,7 +299,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             };
 
             if (isSender) {
-                startStallTimer();
+                // startStallTimer(); // REMOVED: Don't start timer until peer joins (handled in handleSignalingMessage)
                 createOffer();
             } else {
                 pc.ondatachannel = (event) => {
