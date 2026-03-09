@@ -199,6 +199,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             const signalingUrl = CONFIG.SIGNALING_URL;
             console.log('DEBUG: Initializing WebRTC with signaling URL:', signalingUrl);
             const socket = new WebSocket(`${signalingUrl}?sessionId=${sessionId}`);
+            socket.binaryType = 'arraybuffer';
             socketRef.current = socket;
 
             socket.onopen = () => {
