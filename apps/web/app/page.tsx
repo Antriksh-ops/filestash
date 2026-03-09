@@ -7,6 +7,7 @@ import { useWebRTC } from '../hooks/useWebRTC';
 import { getFileChunks } from '../lib/chunker';
 import { computeHash, computeFileHash, encryptChunk, decryptChunk } from '../lib/crypto';
 import { CONFIG } from '../lib/config';
+import { saveTransferState, getTransferState, deleteTransferState } from '../lib/db';
 
 // Add type for WakeLock
 interface WakeLockSentinel {
@@ -14,9 +15,43 @@ interface WakeLockSentinel {
   onrelease: ((this: WakeLockSentinel, ev: Event) => any) | null;
 }
 
+interface BatchMetadata {
+  files: { name: string; size: number }[];
+  sessionId: string;
+}
+
+const SecurityShield = ({ status, sharedKey, progress }: { status: string, sharedKey: any, progress: number }) => {
+  if (status === 'idle') return null;
+  return (
+    <div className="fixed top-24 right-8 z-50 animate-in slide-in-from-right-4 duration-500">
+      <div className="bg-black/90 backdrop-blur-md border-2 border-emerald-400 p-4 rounded-2xl shadow-[0_0_20px_rgba(52,211,153,0.3)] space-y-3 w-64">
+        <div className="flex items-center gap-2">
+          <div className={`w-2 h-2 rounded-full ${sharedKey ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'}`} />
+          <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">Security Link Verified</span>
+        </div>
+        <div className="space-y-1">
+          <div className="flex justify-between text-[8px] font-bold text-zinc-400 uppercase">
+            <span>ECDH Handshake</span>
+            <span className={sharedKey ? 'text-emerald-400' : ''}>{sharedKey ? 'SECURE' : 'PENDING'}</span>
+          </div>
+          <div className="flex justify-between text-[8px] font-bold text-zinc-400 uppercase">
+            <span>AES-256-GCM</span>
+            <span className={sharedKey ? 'text-emerald-400' : ''}>{sharedKey ? 'ACTIVE' : 'WAITING'}</span>
+          </div>
+          <div className="flex justify-between text-[8px] font-bold text-zinc-400 uppercase">
+            <span>Integrity Check</span>
+            <span className={progress > 0 ? 'text-emerald-400' : ''}>{progress > 0 ? 'VERIFYING' : 'IDLE'}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function Home() {
   const [sessionId, setSessionId] = React.useState<string | null>(null);
   const [files, setFiles] = React.useState<File[]>([]);
+  const [batchMetadata, setBatchMetadata] = React.useState<BatchMetadata | null>(null);
   const [progress, setProgress] = React.useState(0);
   const [status, setStatus] = React.useState<'idle' | 'sending' | 'receiving' | 'completed'>('idle');
   const [joinCode, setJoinCode] = React.useState('');
@@ -34,8 +69,9 @@ export default function Home() {
       try {
         wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
         console.log('Wake Lock active - Screen will not sleep');
-      } catch (err) {
-        console.error(`${err.name}, ${err.message}`);
+      } catch (error) {
+        const err = error as any;
+        console.error(`${err?.name || 'Error'}, ${err?.message || 'Unknown error'}`);
       }
     }
   };
@@ -61,7 +97,6 @@ export default function Home() {
 
   // Receiver state
   const chunksRef = React.useRef<ArrayBuffer[]>([]);
-  const [batchMetadata, setBatchMetadata] = React.useState<{ files: { name: string; size: number }[] } | null>(null);
   const [currentFileIndex, setCurrentFileIndex] = React.useState(0);
 
   const isCancelledRef = React.useRef(false);
@@ -133,8 +168,8 @@ export default function Home() {
               suggestedName: message.files[0].name,
             });
             writableRef.current = await handle.createWritable();
-          } catch (e) {
-            console.warn('FileSystem Access API declined or failed, falling back to memory:', e);
+          } catch (e: any) {
+            console.warn('FileSystem Access API declined or failed, falling back to memory:', e?.message || e);
           }
         }
       } else if (message.type === 'file-start') {
@@ -172,7 +207,7 @@ export default function Home() {
         receivedSizeRef.current += decrypted.byteLength;
 
         if (batchMetadata && startTimeRef.current) {
-          const totalSize = batchMetadata.files.reduce((acc, f) => acc + f.size, 0);
+          const totalSize = batchMetadata.files.reduce((acc: number, f: { size: number }) => acc + f.size, 0);
           updateProgressUi(receivedSizeRef.current, totalSize);
 
           if (receivedSizeRef.current - lastFeedbackRef.current > 1024 * 1024) {
@@ -188,10 +223,24 @@ export default function Home() {
             setStatus('completed');
             setEta(null);
             setProgress(100);
+            if (sessionId) deleteTransferState(sessionId); // Cleanup on success
+          } else {
+            // Periodically save state
+            if (receivedSizeRef.current - lastFeedbackRef.current > 5 * 1024 * 1024) {
+              if (sessionId && batchMetadata) {
+                saveTransferState({
+                  sessionId,
+                  files: batchMetadata.files,
+                  receivedSize: receivedSizeRef.current,
+                  lastUpdate: Date.now(),
+                  status: 'active'
+                });
+              }
+            }
           }
         }
-      } catch (e: unknown) {
-        console.error('Decryption failed:', e);
+      } catch (e: any) {
+        console.error('Decryption failed:', e?.message || e);
       }
     }
   }, [batchMetadata, files, updateProgressUi]);
@@ -228,12 +277,25 @@ export default function Home() {
 
   // Only sync session from URL once on mount
   React.useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const sid = params.get('s');
-    if (sid && files.length === 0 && !sessionId) {
-      setSessionId(sid);
-      setStatus('receiving');
-    }
+    const checkResumption = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const sid = params.get('s');
+      if (sid) {
+        const savedState = await getTransferState(sid);
+        if (savedState && savedState.status === 'active') {
+          console.log('Resuming session:', sid, 'at', savedState.receivedSize);
+          setSessionId(sid);
+          setBatchMetadata({ files: savedState.files, sessionId: sid });
+          receivedSizeRef.current = savedState.receivedSize;
+          setStatus('receiving');
+          // We will send the resumption request once the channel is open
+        } else if (files.length === 0 && !sessionId) {
+          setSessionId(sid);
+          setStatus('receiving');
+        }
+      }
+    };
+    checkResumption();
   }, [files.length, sessionId]);
 
   const handleFileSelect = async (selectedFiles: File[]) => {
@@ -292,8 +354,8 @@ export default function Home() {
         }
       });
 
-    } catch (e: unknown) {
-      console.error('Failed to create session:', e);
+    } catch (e: any) {
+      console.error('Failed to create session:', e?.message || e);
       // Fallback to local generation if server fails
       const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
       setSessionId(sid);
@@ -399,7 +461,11 @@ export default function Home() {
   const shareLink = typeof window !== 'undefined' ? `${window.location.origin}?s=${sessionId}` : '';
 
   return (
-    <main className="min-h-screen bg-orange-50 flex flex-col items-center justify-start p-6 pt-16 space-y-12 font-sans overflow-x-hidden">
+    <main className="min-h-screen bg-[#fafafa] flex flex-col items-center py-12 px-4 selection:bg-yellow-300 selection:text-black font-sans overflow-x-hidden relative">
+      {/* Premium Grain Overlay */}
+      <div className="fixed inset-0 pointer-events-none z-0 opacity-[0.03] mix-blend-multiply bg-[url('https://grainy-gradients.vercel.app/noise.svg')]" />
+
+      <SecurityShield status={status} sharedKey={sharedKey} progress={progress} />
       <div className="text-center space-y-4">
         <h1 className="text-7xl font-black text-black tracking-tighter uppercase drop-shadow-[4px_4px_0px_#fde047]">
           FILEDROP
@@ -482,7 +548,7 @@ export default function Home() {
                         <span className="bg-black text-white px-2 py-0.5 rounded text-[10px]">FILE {currentFileIndex + 1}/{files.length || batchMetadata?.files.length}</span>
                       ) : null}
                       <span>
-                        {files.length > 0 ? (files.reduce((a, b) => a + b.size, 0) / 1024 / 1024).toFixed(2) : batchMetadata ? (batchMetadata.files.reduce((a, b) => a + b.size, 0) / 1024 / 1024).toFixed(2) : '0'} MB
+                        {files.length > 0 ? (files.reduce((a: number, b: File) => a + b.size, 0) / 1024 / 1024).toFixed(2) : batchMetadata ? (batchMetadata.files.reduce((a: number, b: { size: number }) => a + b.size, 0) / 1024 / 1024).toFixed(2) : '0'} MB
                       </span>
                     </p>
                   </div>
