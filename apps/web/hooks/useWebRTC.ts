@@ -190,6 +190,10 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             } else {
                 pendingCandidates.current.push(message.candidate);
             }
+        } else {
+            // RELAY SYNC FIX: Forward any unknown messages (like batch-metadata/start-transfer) 
+            // to the application message handler. This ensures relay mode handles sync signals.
+            messageRef.current?.(message);
         }
     }, [isSender, createOffer, sendSignaling]);
 
