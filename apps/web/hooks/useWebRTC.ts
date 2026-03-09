@@ -12,6 +12,8 @@ interface WebRTCOptions {
     isSender: boolean;
     onDataChannelMessage?: (data: string | ArrayBuffer) => void;
     onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+    onMessage?: (message: unknown) => void;
+    onComplete?: () => void;
 }
 
 const STUN_SERVERS = {
@@ -21,7 +23,7 @@ const STUN_SERVERS = {
     ],
 };
 
-export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnectionStateChange }: WebRTCOptions) {
+export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnectionStateChange, onMessage, onComplete }: WebRTCOptions) {
     const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
     const [dataChannel, setDataChannel] = useState<RTCDataChannel | null>(null);
     const [channelState, setChannelState] = useState<RTCDataChannelState>('connecting');
@@ -35,6 +37,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const queueRef = useRef<string[]>([]);
     const messageHandlerRef = useRef(onDataChannelMessage);
     const connectionStateHandlerRef = useRef(onConnectionStateChange);
+    const messageRef = useRef(onMessage);
+    const completeRef = useRef(onComplete);
     const relayTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
     useEffect(() => {
@@ -44,6 +48,14 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     useEffect(() => {
         connectionStateHandlerRef.current = onConnectionStateChange;
     }, [onConnectionStateChange]);
+
+    useEffect(() => {
+        messageRef.current = onMessage;
+    }, [onMessage]);
+
+    useEffect(() => {
+        completeRef.current = onComplete;
+    }, [onComplete]);
 
     const sendSignaling = useCallback((msg: unknown) => {
         const json = JSON.stringify(msg);
@@ -80,7 +92,19 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             console.log('Data channel closed');
             setChannelState('closed');
         };
-        dc.onmessage = (event) => messageHandlerRef.current?.(event.data);
+        dc.onmessage = (event) => {
+            const data = event.data;
+            messageHandlerRef.current?.(data);
+            if (typeof data === 'string') {
+                try {
+                    const message = JSON.parse(data);
+                    if (message.type === 'transfer-complete') {
+                        completeRef.current?.();
+                    }
+                    messageRef.current?.(message);
+                } catch (e) { }
+            }
+        };
         setDataChannel(dc);
         setChannelState(dc.readyState);
     }, []);

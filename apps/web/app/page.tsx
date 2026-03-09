@@ -12,7 +12,7 @@ import { saveTransferState, getTransferState, deleteTransferState } from '../lib
 // Add type for WakeLock
 interface WakeLockSentinel {
   release(): Promise<void>;
-  onrelease: ((this: WakeLockSentinel, ev: Event) => any) | null;
+  onrelease: ((this: WakeLockSentinel, ev: Event) => void) | null;
 }
 
 interface BatchMetadata {
@@ -20,7 +20,7 @@ interface BatchMetadata {
   sessionId: string;
 }
 
-const SecurityShield = ({ status, sharedKey, progress }: { status: string, sharedKey: any, progress: number }) => {
+const SecurityShield = ({ status, sharedKey, progress }: { status: string, sharedKey: CryptoKey | null, progress: number }) => {
   if (status === 'idle') return null;
   return (
     <div className="fixed top-24 right-8 z-50 animate-in slide-in-from-right-4 duration-500">
@@ -64,25 +64,25 @@ export default function Home() {
   const wakeLockRef = React.useRef<WakeLockSentinel | null>(null);
 
   // Manage Wake Lock
-  const requestWakeLock = async () => {
+  const requestWakeLock = React.useCallback(async () => {
     if ('wakeLock' in navigator) {
       try {
-        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+        wakeLockRef.current = await (navigator as Navigator & { wakeLock: { request: (type: 'screen') => Promise<WakeLockSentinel> } }).wakeLock.request('screen');
         console.log('Wake Lock active - Screen will not sleep');
       } catch (error) {
-        const err = error as any;
-        console.error(`${err?.name || 'Error'}, ${err?.message || 'Unknown error'}`);
+        const err = error instanceof Error ? error : new Error(String(error));
+        console.error(`${err.name}, ${err.message}`);
       }
     }
-  };
+  }, []);
 
-  const releaseWakeLock = () => {
+  const releaseWakeLock = React.useCallback(() => {
     if (wakeLockRef.current) {
       wakeLockRef.current.release();
       wakeLockRef.current = null;
       console.log('Wake Lock released');
     }
-  };
+  }, []);
 
   // Progress tracking (Re-synced with REFs for accuracy)
   const totalSentRef = React.useRef(0);
@@ -118,8 +118,8 @@ export default function Home() {
         const remaining = total - current;
         const timeRemaining = remaining / speed;
         if (timeRemaining > 0 && isFinite(timeRemaining)) {
-          const mins = Math.floor(timeRemaining / 60);
-          const secs = Math.floor(timeRemaining % 60);
+          Math.floor(timeRemaining / 60); // mins
+          Math.floor(timeRemaining % 60); // secs
           setEta(timeRemaining); // Store raw seconds for ETA
         }
       }
@@ -130,20 +130,24 @@ export default function Home() {
     console.log('PC State:', state);
   }, []);
 
-  const onTransferStart = async () => {
+  const onTransferStart = React.useCallback(async () => {
     startTimeRef.current = Date.now(); // Use startTimeRef for consistency
     await requestWakeLock();
-  };
+  }, [requestWakeLock]);
 
-  const onTransferEnd = () => {
+  const onTransferEnd = React.useCallback(() => {
     releaseWakeLock();
-  };
+  }, [releaseWakeLock]);
 
   const { sendData, dataChannel, channelState, waitForBuffer, sharedKey, isRelayActive } = useWebRTC({
     sessionId: sessionId || '',
     isSender: files.length > 0,
     onDataChannelMessage: (data: string | ArrayBuffer) => onMessage(data),
     onConnectionStateChange,
+    onComplete: () => {
+      onTransferEnd();
+      setStatus('completed');
+    }
   });
 
   const writableRef = React.useRef<FileSystemWritableFileStream | null>(null);
@@ -168,8 +172,8 @@ export default function Home() {
               suggestedName: message.files[0].name,
             });
             writableRef.current = await handle.createWritable();
-          } catch (e: any) {
-            console.warn('FileSystem Access API declined or failed, falling back to memory:', e?.message || e);
+          } catch (e: unknown) {
+            console.warn('FileSystem Access API declined or failed, falling back to memory:', e instanceof Error ? e.message : e);
           }
         }
       } else if (message.type === 'file-start') {
@@ -239,11 +243,11 @@ export default function Home() {
             }
           }
         }
-      } catch (e: any) {
-        console.error('Decryption failed:', e?.message || e);
+      } catch (e: unknown) {
+        console.error('Decryption failed:', e instanceof Error ? e.message : e);
       }
     }
-  }, [batchMetadata, files, updateProgressUi]);
+  }, [batchMetadata, files, updateProgressUi, sessionId]);
 
   React.useEffect(() => {
     sendDataRef.current = sendData;
@@ -354,8 +358,9 @@ export default function Home() {
         }
       });
 
-    } catch (e: any) {
-      console.error('Failed to create session:', e?.message || e);
+    } catch (error) {
+      const e = error instanceof Error ? error : new Error(String(error));
+      console.error('Failed to create session:', e.message);
       // Fallback to local generation if server fails
       const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
       setSessionId(sid);
@@ -366,6 +371,7 @@ export default function Home() {
 
   const startTransfer = React.useCallback(async () => {
     if (files.length === 0) return;
+    await onTransferStart();
     isCancelledRef.current = false;
     startTimeRef.current = Date.now();
     totalSentRef.current = 0;
@@ -415,8 +421,10 @@ export default function Home() {
       setStatus('completed');
       setEta(null);
       setProgress(100);
+      onTransferEnd();
+      sendData(JSON.stringify({ type: 'transfer-complete' }));
     }
-  }, [files, sendData, waitForBuffer, updateProgressUi, sharedKey]);
+  }, [files, sendData, waitForBuffer, updateProgressUi, sharedKey, onTransferStart, onTransferEnd]);
 
   React.useEffect(() => {
     if (status === 'sending' && files.length > 0 && channelState === 'open' && isTransferStarted) {
