@@ -246,9 +246,18 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             socketRef.current = socket;
 
             socket.onopen = () => {
+                console.log('[SIGNALLING] WebSocket Connected');
                 while (queueRef.current.length > 0) {
                     socket.send(queueRef.current.shift()!);
                 }
+            };
+
+            socket.onerror = (e) => {
+                console.error('[SIGNALLING] WebSocket Error:', e);
+            };
+
+            socket.onclose = (e) => {
+                console.warn('[SIGNALLING] WebSocket Closed:', e.code, e.reason);
             };
 
             socket.onmessage = (event) => {
