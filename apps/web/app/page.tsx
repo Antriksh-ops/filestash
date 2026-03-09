@@ -205,10 +205,12 @@ export default function Home() {
 
     // Spec: Call POST /session/create
     try {
-      const signalingUrl = (process.env.NEXT_PUBLIC_SIGNALING_URL || 'ws://localhost:8080')
-        .replace('ws://', 'http://')
-        .replace('wss://', 'https://');
-      console.log('DEBUG: Calculated signaling HTTP API URL:', signalingUrl, 'from env:', process.env.NEXT_PUBLIC_SIGNALING_URL || 'UNDEFINED (falling back to localhost)');
+      const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_URL_HTTP ||
+        (process.env.NEXT_PUBLIC_SIGNALING_URL || 'ws://localhost:8080')
+          .replace('ws://', 'http://')
+          .replace('wss://', 'https://');
+
+      console.log('DEBUG: Calculated signaling HTTP API URL:', signalingUrl, 'source:', process.env.NEXT_PUBLIC_SIGNALING_URL_HTTP ? 'env_http' : (process.env.NEXT_PUBLIC_SIGNALING_URL ? 'env_ws' : 'fallback_localhost'));
       const response = await fetch(`${signalingUrl}/session/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

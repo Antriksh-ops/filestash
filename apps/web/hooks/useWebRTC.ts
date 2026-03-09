@@ -53,6 +53,18 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         }
     }, []);
 
+    const startRelayTimeout = useCallback(() => {
+        if (relayTimeoutRef.current) return;
+        console.log('Handshake started, arming relay fallback (8s)...');
+        relayTimeoutRef.current = setTimeout(() => {
+            if (channelState !== 'open') {
+                console.log('P2P taking too long, activating relay fallback...');
+                setIsRelayActive(true);
+                setChannelState('open');
+            }
+        }, 8000);
+    }, [channelState]);
+
     const setupDataChannel = useCallback((dc: RTCDataChannel) => {
         dc.binaryType = 'arraybuffer';
         dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB threshold
@@ -74,6 +86,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
     const createOffer = useCallback(async () => {
         if (!pcRef.current) return;
+        startRelayTimeout();
         const pc = pcRef.current;
         const dc = pc.createDataChannel('file-transfer', { ordered: true });
         setupDataChannel(dc);
@@ -113,6 +126,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             console.log('Peer joined, re-initiating offer');
             createOffer();
         } else if (message.offer && !isSender) {
+            startRelayTimeout();
             await pcRef.current.setRemoteDescription(new RTCSessionDescription(message.offer));
             const answer = await pcRef.current.createAnswer();
             await pcRef.current.setLocalDescription(answer);
@@ -157,7 +171,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             myKeyPairRef.current = await generateECDHKeyPair();
 
             // 2. Setup WebSocket
-            const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_URL || 'ws://localhost:8080';
+            const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_URL || 'wss://filestash-z8go.onrender.com';
             console.log('DEBUG: Initializing WebRTC with signaling URL:', signalingUrl);
             const socket = new WebSocket(`${signalingUrl}?sessionId=${sessionId}`);
             socketRef.current = socket;
@@ -205,15 +219,6 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                     setupDataChannel(event.channel);
                 };
             }
-
-            // 4. Relay Fallback Timeout
-            relayTimeoutRef.current = setTimeout(() => {
-                if (channelState !== 'open') {
-                    console.log('P2P taking too long, activating relay fallback...');
-                    setIsRelayActive(true);
-                    setChannelState('open');
-                }
-            }, 8000); // 8 second grace period for P2P
         };
 
         init();
