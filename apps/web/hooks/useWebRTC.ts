@@ -111,7 +111,6 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
     const createOffer = useCallback(async () => {
         if (!pcRef.current) return;
-        startRelayTimeout();
         const pc = pcRef.current;
         const dc = pc.createDataChannel('file-transfer', { ordered: true });
         setupDataChannel(dc);
@@ -149,6 +148,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
         if (message.type === 'peer_joined' && isSender) {
             console.log('Peer joined, re-initiating offer');
+            startRelayTimeout();
             createOffer();
         } else if (message.offer && !isSender) {
             startRelayTimeout();
@@ -297,6 +297,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         sendData,
         waitForBuffer,
         sharedKey,
-        isRelayActive
+        isRelayActive,
+        signalingState: socketRef.current?.readyState ?? WebSocket.CLOSED
     };
 }

@@ -20,33 +20,6 @@ interface BatchMetadata {
   sessionId: string;
 }
 
-const SecurityShield = ({ status, sharedKey, progress }: { status: string, sharedKey: CryptoKey | null, progress: number }) => {
-  if (status === 'idle') return null;
-  return (
-    <div className="fixed top-24 right-8 z-50 animate-in slide-in-from-right-4 duration-500">
-      <div className="bg-black/90 backdrop-blur-md border-2 border-emerald-400 p-4 rounded-2xl shadow-[0_0_20px_rgba(52,211,153,0.3)] space-y-3 w-64">
-        <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${sharedKey ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'}`} />
-          <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">Security Link Verified</span>
-        </div>
-        <div className="space-y-1">
-          <div className="flex justify-between text-[8px] font-bold text-zinc-400 uppercase">
-            <span>ECDH Handshake</span>
-            <span className={sharedKey ? 'text-emerald-400' : ''}>{sharedKey ? 'SECURE' : 'PENDING'}</span>
-          </div>
-          <div className="flex justify-between text-[8px] font-bold text-zinc-400 uppercase">
-            <span>AES-256-GCM</span>
-            <span className={sharedKey ? 'text-emerald-400' : ''}>{sharedKey ? 'ACTIVE' : 'WAITING'}</span>
-          </div>
-          <div className="flex justify-between text-[8px] font-bold text-zinc-400 uppercase">
-            <span>Integrity Check</span>
-            <span className={progress > 0 ? 'text-emerald-400' : ''}>{progress > 0 ? 'VERIFYING' : 'IDLE'}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
 
 export default function Home() {
   const [sessionId, setSessionId] = React.useState<string | null>(null);
@@ -139,7 +112,7 @@ export default function Home() {
     releaseWakeLock();
   }, [releaseWakeLock]);
 
-  const { sendData, dataChannel, channelState, waitForBuffer, sharedKey, isRelayActive } = useWebRTC({
+  const { sendData, dataChannel, channelState, waitForBuffer, sharedKey, isRelayActive, signalingState } = useWebRTC({
     sessionId: sessionId || '',
     isSender: files.length > 0,
     onDataChannelMessage: (data: string | ArrayBuffer) => onMessage(data),
@@ -220,13 +193,13 @@ export default function Home() {
           }
 
           if (receivedSizeRef.current >= totalSize) {
+            setStatus('completed');
+            setEta(null);
+            setProgress(100);
             if (writableRef.current) {
               await writableRef.current.close();
               writableRef.current = null;
             }
-            setStatus('completed');
-            setEta(null);
-            setProgress(100);
             if (sessionId) deleteTransferState(sessionId); // Cleanup on success
           } else {
             // Periodically save state
@@ -473,7 +446,7 @@ export default function Home() {
       {/* Premium Grain Overlay */}
       <div className="fixed inset-0 pointer-events-none z-0 opacity-[0.03] mix-blend-multiply bg-[url('https://grainy-gradients.vercel.app/noise.svg')]" />
 
-      <SecurityShield status={status} sharedKey={sharedKey} progress={progress} />
+      {/* Removed SecurityShield */}
       <div className="text-center space-y-4">
         <h1 className="text-7xl font-black text-black tracking-tighter uppercase drop-shadow-[4px_4px_0px_#fde047]">
           FILEDROP
@@ -580,6 +553,9 @@ export default function Home() {
 
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2">
+                <span className={`text-black font-black uppercase text-[10px] tracking-widest px-3 py-1 rounded-lg border-2 border-black ${signalingState === 1 ? 'bg-emerald-400' : 'bg-rose-400 animate-pulse'}`}>
+                  SIGNALING: {signalingState === 1 ? 'ONLINE' : 'OFFLINE'}
+                </span>
                 <span className="text-black font-black uppercase text-[10px] tracking-widest bg-yellow-200 px-3 py-1 rounded-lg border-2 border-black">
                   {status === 'completed' ? 'SUCCESS' : channelState === 'open' ? (status === 'sending' ? (isTransferStarted ? 'SENDING' : 'READY') : (receivedSizeRef.current > 0 ? 'RECEIVING' : 'WAITING FOR SENDER')) : (status === 'sending' ? 'WAITING FOR PEER' : 'CONNECTING...')}
                 </span>
