@@ -16,11 +16,16 @@ interface WebRTCOptions {
     onComplete?: () => void;
 }
 
-const STUN_SERVERS = {
+const RTC_CONFIG: RTCConfiguration = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
     ],
+    iceCandidatePoolSize: 10,
+    bundlePolicy: 'max-bundle',
 };
 
 export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnectionStateChange, onMessage, onComplete }: WebRTCOptions) {
@@ -68,14 +73,14 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
     const startRelayTimeout = useCallback(() => {
         if (relayTimeoutRef.current) return;
-        console.log('Handshake started, arming relay fallback (8s)...');
+        console.log('Handshake started, arming relay fallback (60s)...');
         relayTimeoutRef.current = setTimeout(() => {
             if (channelState !== 'open') {
-                console.log('P2P taking too long, activating relay fallback...');
+                console.log('P2P taking too long, activating relay fallback (60s)...');
                 setIsRelayActive(true);
                 setChannelState('open');
             }
-        }, 8000);
+        }, 60000);
     }, [channelState]);
 
     const setupDataChannel = useCallback((dc: RTCDataChannel) => {
@@ -219,7 +224,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             };
 
             // 3. Setup RTCPeerConnection
-            const pc = new RTCPeerConnection(STUN_SERVERS);
+            const pc = new RTCPeerConnection(RTC_CONFIG);
             pcRef.current = pc;
             setPeerConnection(pc);
 
