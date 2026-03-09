@@ -13,6 +13,7 @@ interface WebRTCOptions {
     onDataChannelMessage?: (data: string | ArrayBuffer) => void;
     onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
     onMessage?: (message: unknown) => void;
+    onStalled?: () => void;
     onComplete?: () => void;
 }
 
@@ -31,7 +32,7 @@ const RTC_CONFIG: RTCConfiguration = {
     bundlePolicy: 'max-bundle',
 };
 
-export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnectionStateChange, onMessage, onComplete }: WebRTCOptions) {
+export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnectionStateChange, onMessage, onStalled, onComplete }: WebRTCOptions) {
     const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
     const [dataChannel, setDataChannel] = useState<RTCDataChannel | null>(null);
     const [channelState, setChannelState] = useState<RTCDataChannelState>('connecting');
@@ -47,6 +48,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const connectionStateHandlerRef = useRef(onConnectionStateChange);
     const messageRef = useRef(onMessage);
     const completeRef = useRef(onComplete);
+    const stalledRef = useRef(onStalled);
+    const stallTimerRef = useRef<NodeJS.Timeout | null>(null);
     const relayTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
     useEffect(() => {
@@ -64,6 +67,10 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     useEffect(() => {
         completeRef.current = onComplete;
     }, [onComplete]);
+
+    useEffect(() => {
+        stalledRef.current = onStalled;
+    }, [onStalled]);
 
     const sendSignaling = useCallback((msg: unknown) => {
         const json = JSON.stringify(msg);
@@ -111,6 +118,16 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         };
         setDataChannel(dc);
         setChannelState(dc.readyState);
+    }, []);
+
+    const startStallTimer = useCallback(() => {
+        if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
+        stallTimerRef.current = setTimeout(() => {
+            if (pcRef.current?.connectionState !== 'connected') {
+                console.warn('[P2P] Connection process stalled (15s). Notifying UI...');
+                stalledRef.current?.();
+            }
+        }, 15000);
     }, []);
 
     const createOffer = useCallback(async () => {
@@ -255,7 +272,12 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 }
                 connectionStateHandlerRef.current?.(pc.connectionState);
 
+                if (pc.connectionState === 'connected') {
+                    if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
+                }
+
                 if (pc.connectionState === 'failed') {
+                    if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
                     console.error('[P2P] CONNECTION FAILED. Possible reasons: Symmetric NAT on both ends, firewall blocks, or no STUN/TURN path.');
                 }
                 if (pc.connectionState === 'disconnected') {
@@ -268,6 +290,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             };
 
             if (isSender) {
+                startStallTimer();
                 createOffer();
             } else {
                 pc.ondatachannel = (event) => {

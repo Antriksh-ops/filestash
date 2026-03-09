@@ -239,8 +239,8 @@ export default function Home() {
     sessionId: sessionId || '',
     isSender: files.length > 0,
     onDataChannelMessage: handleRawMessage,
-    onMessage: (msg: any) => {
-      if (msg.type === 'force-relay') {
+    onMessage: (msg: unknown) => {
+      if (msg && typeof msg === 'object' && 'type' in msg && msg.type === 'force-relay') {
         // If peer forces relay, we just follow
         return;
       }
@@ -251,6 +251,9 @@ export default function Home() {
       if (state === 'failed') {
         setShowRelayPrompt(true);
       }
+    },
+    onStalled: () => {
+      setShowRelayPrompt(true);
     },
     onComplete: () => {
       onTransferEnd();
