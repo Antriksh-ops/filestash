@@ -6,6 +6,7 @@ import {
     deriveAESKey
 } from '../lib/crypto';
 import { CONFIG } from '../lib/config';
+import { getIceServers } from '../lib/turn';
 
 interface WebRTCOptions {
     sessionId: string;
@@ -17,31 +18,7 @@ interface WebRTCOptions {
     onComplete?: () => void;
 }
 
-const RTC_CONFIG: RTCConfiguration = {
-    iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-        { urls: 'stun:global.stun.twilio.com:3478' },
-        // Free TURN server provided by Metered.ca
-        {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        },
-        {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        },
-        {
-            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        }
-    ],
+const RTC_CONFIG_BASE: Omit<RTCConfiguration, 'iceServers'> = {
     iceCandidatePoolSize: 10,
     bundlePolicy: 'max-bundle',
     iceTransportPolicy: 'all', // Ensure 'relay' candidates can be used
@@ -299,13 +276,26 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             };
 
             // 3. Setup RTCPeerConnection
-            const pc = new RTCPeerConnection(RTC_CONFIG);
+            const iceServers = await getIceServers();
+            console.log(`[P2P] Fetched ${iceServers.length} ICE servers securely`);
+
+            const rtcConfig: RTCConfiguration = {
+                ...RTC_CONFIG_BASE,
+                iceServers,
+            };
+
+            const pc = new RTCPeerConnection(rtcConfig);
             pcRef.current = pc;
             setPeerConnection(pc);
 
             pc.onicecandidate = (event) => {
                 if (event.candidate) {
-                    const type = event.candidate.type || (event.candidate.candidate.includes('typ relay') ? 'relay' : event.candidate.candidate.includes('typ srflx') ? 'srflx' : 'host');
+                    const typeMatch = event.candidate.candidate.match(/typ (\w+)/);
+                    const type = typeMatch ? typeMatch[1] : event.candidate.type;
+
+                    // Diagnostic helper: log ICE candidate types
+                    console.info(`🎯 [ICE Diagnostics] Gathered candidate type: ${type}`);
+
                     console.log(`[P2P] Local ICE Candidate (${type}):`, event.candidate.candidate);
                     sendSignaling({ candidate: event.candidate });
                 }
