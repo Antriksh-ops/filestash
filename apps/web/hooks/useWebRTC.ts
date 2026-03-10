@@ -314,7 +314,13 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
                 if (pc.connectionState === 'failed' || pc.iceConnectionState === 'failed') {
                     if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
-                    console.error('[P2P] CONNECTION FAILED. Possible reasons: Symmetric NAT on both ends, firewall blocks, or no STUN/TURN path.');
+                    console.error('[P2P] CONNECTION FAILED. Attempting ICE restart before relay fallback...');
+                    // Auto-attempt ICE restart once before showing relay prompt
+                    try {
+                        pc.restartIce();
+                    } catch (e) {
+                        console.warn('[P2P] ICE restart not supported:', e);
+                    }
                 }
                 if (pc.connectionState === 'disconnected' || pc.iceConnectionState === 'disconnected') {
                     console.warn('[P2P] Peer disconnected.');
@@ -382,15 +388,11 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
         if (dataChannel && dataChannel.readyState === 'open') {
             try {
+                // RTCDataChannel.send() natively accepts string | ArrayBuffer | Blob | ArrayBufferView
                 if (typeof data === 'string') {
                     dataChannel.send(data);
-                } else if (data instanceof ArrayBuffer) {
-                    dataChannel.send(data);
-                } else if (data instanceof Blob) {
-                    dataChannel.send(data);
                 } else {
-                    // @ts-expect-error TypeScript is strict about ArrayBufferLike
-                    dataChannel.send(data);
+                    dataChannel.send(data as ArrayBuffer);
                 }
                 return true;
             } catch (e) {
@@ -403,6 +405,15 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
     const reconnectP2P = useCallback(() => {
         console.log('[P2P] Manual Re-Handshake requested...');
+        // Attempt ICE restart first (works for both roles)
+        if (pcRef.current) {
+            try {
+                pcRef.current.restartIce();
+            } catch (e) {
+                console.warn('[P2P] ICE restart failed:', e);
+            }
+        }
+        // Sender re-creates offer to renegotiate
         if (isSender) {
             createOffer();
         }

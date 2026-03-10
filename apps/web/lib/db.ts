@@ -11,6 +11,8 @@ export interface TransferState {
     receivedSize: number;
     lastUpdate: number;
     status: 'active' | 'completed' | 'paused';
+    totalChunks: number;
+    completedChunks: boolean[];
 }
 
 export const initDB = (): Promise<IDBDatabase> => {
