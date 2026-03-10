@@ -34,6 +34,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
     const socketRef = useRef<WebSocket | null>(null);
     const pcRef = useRef<RTCPeerConnection | null>(null);
+    const dataChannelRef = useRef<RTCDataChannel | null>(null);
     const myKeyPairRef = useRef<CryptoKeyPair | null>(null);
     const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
     const queueRef = useRef<string[]>([]);
@@ -83,16 +84,32 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     }, [sendSignaling]);
 
     const setupDataChannel = useCallback((dc: RTCDataChannel) => {
+        // Neutralize old channel's handlers to prevent state corruption
+        const old = dataChannelRef.current;
+        if (old && old !== dc) {
+            console.warn('[P2P] Replacing old data channel — neutralizing its handlers');
+            old.onopen = null;
+            old.onclose = null;
+            old.onmessage = null;
+            old.onerror = null;
+            try { old.close(); } catch { /* already closed */ }
+        }
+        dataChannelRef.current = dc;
+
         dc.binaryType = 'arraybuffer';
         dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB threshold
 
         dc.onopen = () => {
+            // Only update state if this is still the active channel
+            if (dataChannelRef.current !== dc) return;
             console.log('Data channel opened');
             setChannelState('open');
             setIsRelayActive(false);
             if (relayTimeoutRef.current) clearTimeout(relayTimeoutRef.current);
         };
         dc.onclose = () => {
+            // Only update state if this is still the active channel
+            if (dataChannelRef.current !== dc) return;
             console.log('Data channel closed');
             setChannelState('closed');
         };
@@ -126,8 +143,15 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const createOffer = useCallback(async () => {
         if (!pcRef.current) return;
         const pc = pcRef.current;
-        const dc = pc.createDataChannel('file-transfer', { ordered: true });
-        setupDataChannel(dc);
+
+        // Guard: don't create a new data channel if one is already open/connecting
+        const existing = dataChannelRef.current;
+        if (existing && (existing.readyState === 'open' || existing.readyState === 'connecting')) {
+            console.log('[P2P] Data channel already active, renegotiating without creating new channel');
+        } else {
+            const dc = pc.createDataChannel('file-transfer', { ordered: true });
+            setupDataChannel(dc);
+        }
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
