@@ -332,8 +332,9 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             };
 
             if (isSender) {
-                // startStallTimer(); // REMOVED: Don't start timer until peer joins (handled in handleSignalingMessage)
-                createOffer();
+                // Don't create offer yet — wait for peer_joined signal
+                // This prevents creating duplicate data channels
+                console.log('[P2P] Sender ready, waiting for peer to join...');
             } else {
                 pc.ondatachannel = (event) => {
                     setupDataChannel(event.channel);
