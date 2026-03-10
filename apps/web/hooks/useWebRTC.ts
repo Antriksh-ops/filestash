@@ -53,6 +53,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const [channelState, setChannelState] = useState<RTCDataChannelState>('connecting');
     const [isRelayActive, setIsRelayActive] = useState(false);
     const [sharedKey, setSharedKey] = useState<CryptoKey | null>(null);
+    const [signalingState, setSignalingState] = useState<number>(WebSocket.CLOSED);
 
     const socketRef = useRef<WebSocket | null>(null);
     const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -264,9 +265,11 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             const socket = new WebSocket(`${signalingUrl}?sessionId=${sessionId}`);
             socket.binaryType = 'arraybuffer';
             socketRef.current = socket;
+            setSignalingState(socket.readyState);
 
             socket.onopen = () => {
                 console.log('[SIGNALLING] WebSocket Connected');
+                setSignalingState(WebSocket.OPEN);
                 while (queueRef.current.length > 0) {
                     socket.send(queueRef.current.shift()!);
                 }
@@ -274,10 +277,12 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
             socket.onerror = (e) => {
                 console.error('[SIGNALLING] WebSocket Error:', e);
+                setSignalingState(socket.readyState);
             };
 
             socket.onclose = (e) => {
                 console.warn('[SIGNALLING] WebSocket Closed:', e.code, e.reason);
+                setSignalingState(WebSocket.CLOSED);
             };
 
             socket.onmessage = (event) => {
@@ -408,6 +413,6 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         isRelayActive,
         activateRelay,
         reconnectP2P,
-        signalingState: socketRef.current?.readyState ?? WebSocket.CLOSED
+        signalingState
     };
 }
