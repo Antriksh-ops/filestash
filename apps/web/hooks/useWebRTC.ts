@@ -232,6 +232,9 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             } else {
                 pendingCandidates.current.push(message.candidate);
             }
+        } else if (message.type === 'cancel') {
+            console.warn('[SIGNALLING] Peer sent a cancel signal via fallback');
+            messageRef.current?.({ type: 'cancel' });
         } else {
             // Forward any other messages (like errors or custom sync signals)
             // to the application message handler.
@@ -355,7 +358,19 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     }, [sessionId, isSender, handleSignalingMessage, createOffer, setupDataChannel, sendSignaling]);
 
     const waitForBuffer = useCallback(() => {
-        if (isRelayActive) return Promise.resolve(); // WS relay uses different flow control
+        if (isRelayActive && socketRef.current) {
+            // WebSockets buffer logic: wait if bufferedAmount exceeds 1MB 
+            return new Promise<void>((resolve) => {
+                const checkWSBuffer = () => {
+                    if (!socketRef.current || socketRef.current.bufferedAmount <= 1024 * 1024) {
+                        resolve();
+                    } else {
+                        setTimeout(checkWSBuffer, 50); // Poll every 50ms for relay backpressure
+                    }
+                };
+                checkWSBuffer();
+            });
+        }
         return new Promise<void>((resolve) => {
             if (!dataChannel || dataChannel.bufferedAmount <= dataChannel.bufferedAmountLowThreshold) {
                 resolve();
@@ -413,6 +428,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         isRelayActive,
         activateRelay,
         reconnectP2P,
-        signalingState
+        signalingState,
+        sendSignaling
     };
 }

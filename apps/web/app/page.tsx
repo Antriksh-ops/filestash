@@ -235,7 +235,7 @@ export default function Home() {
     }
   }, [batchMetadata, files, updateProgressUi, sessionId]);
 
-  const { sendData, dataChannel, channelState, waitForBuffer, sharedKey, isRelayActive, activateRelay, reconnectP2P, signalingState } = useWebRTC({
+  const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, sharedKey, isRelayActive, activateRelay, reconnectP2P, signalingState } = useWebRTC({
     sessionId: sessionId || '',
     isSender: files.length > 0,
     onDataChannelMessage: handleRawMessage,
@@ -261,17 +261,26 @@ export default function Home() {
     }
   });
 
+  const sendSignalingRef = React.useRef(sendSignaling);
+
   React.useEffect(() => {
     sendDataRef.current = sendData;
     sharedKeyRef.current = sharedKey;
     isRelayActiveRef.current = isRelayActive;
-  }, [sendData, sharedKey, isRelayActive]);
+    sendSignalingRef.current = sendSignaling;
+  }, [sendData, sharedKey, isRelayActive, sendSignaling]);
 
   const handleCancel = React.useCallback((isInitiator = true) => {
     isCancelledRef.current = true;
-    if (isInitiator && dataChannel?.readyState === 'open') {
+    if (isInitiator) {
+      if (dataChannel?.readyState === 'open') {
+        try {
+          sendData(JSON.stringify({ type: 'cancel' }));
+        } catch { }
+      }
+      // Broadcast cancel out-of-band to ensure remote peer catches it even if P2P is dead
       try {
-        sendData(JSON.stringify({ type: 'cancel' }));
+        sendSignalingRef.current({ type: 'cancel' });
       } catch { }
     }
     setFiles([]);
