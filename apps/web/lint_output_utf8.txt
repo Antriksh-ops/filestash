@@ -1,0 +1,34 @@
+﻿
+> web@0.1.0 lint
+> eslint
+
+
+C:\Users\dear_\OneDrive\Desktop\Filedrop\apps\web\hooks\useWebRTC.ts
+  131:26  error    'e' is defined but never used                                                                                                                                                                                                                                                  @typescript-eslint/no-unused-vars
+  239:8   warning  React Hook useCallback has a missing dependency: 'startStallTimer'. Either include it or remove the dependency array                                                                                                                                                           react-hooks/exhaustive-deps
+  345:71  warning  The ref value 'relayTimeoutRef.current' will likely have changed by the time this effect cleanup function runs. If this ref points to a node rendered by React, copy 'relayTimeoutRef.current' to a variable inside the effect, and use that variable in the cleanup function  react-hooks/exhaustive-deps
+  374:42  error    Unexpected any. Specify a different type                                                                                                                                                                                                                                       @typescript-eslint/no-explicit-any
+
+Γ£û 4 problems (2 errors, 2 warnings)
+
+node.exe : npm error Lifecycle script `lint` 
+failed with error:
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" 
+"C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (npm 
+    error Lifec...led with error::String) [], R  
+  emoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+npm error code 1
+npm error path 
+C:\Users\dear_\OneDrive\Desktop\Filedrop\apps\web
+npm error workspace web@0.1.0
+npm error location 
+C:\Users\dear_\OneDrive\Desktop\Filedrop\apps\web
+npm error command failed
+npm error command C:\WINDOWS\system32\cmd.exe /d 
+/s /c eslint

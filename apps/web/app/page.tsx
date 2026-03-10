@@ -534,7 +534,7 @@ export default function Home() {
       )}
 
       {/* Removed SecurityShield */}
-      <div className="text-center space-y-4">
+      <div className="text-center space-y-4 pt-12">
         <h1 className="text-7xl font-black text-black tracking-tighter uppercase drop-shadow-[4px_4px_0px_#fde047]">
           FILEDROP
         </h1>
@@ -543,7 +543,8 @@ export default function Home() {
         </h2>
       </div>
 
-      <div className="w-full max-w-5xl space-y-8 flex-1 flex flex-col items-center justify-start min-h-[850px] transition-all duration-500">
+
+      <div className="w-full max-w-5xl space-y-8 flex-1 flex flex-col items-center justify-start min-h-[850px] transition-all duration-500 pt-8">
         {error && (
           <div className="w-full bg-rose-50 border-4 border-rose-500 p-6 rounded-3xl flex items-center justify-between shadow-[8px_8px_0px_0px_rgba(244,63,94,1)] animate-in slide-in-from-top-4">
             <div className="flex items-center gap-4">

@@ -25,15 +25,22 @@ const RTC_CONFIG: RTCConfiguration = {
         { urls: 'stun:stun3.l.google.com:19302' },
         { urls: 'stun:stun4.l.google.com:19302' },
         { urls: 'stun:global.stun.twilio.com:3478' },
-        // [IMPORTANT] Add TURN servers here for high reliability (e.g., across symmetric NATs/Firewalls)
-        // You can use a service like Metered.ca (Free Tier), Twilio, or self-hosted Coturn.
-        /*
-        { 
-          urls: 'turn:YOUR_TURN_DOMAIN:PORT', 
-          username: 'YOUR_USERNAME', 
-          credential: 'YOUR_PASSWORD' 
+        // Free TURN server provided by Metered.ca
+        {
+            urls: 'turn:openrelay.metered.ca:80',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
         },
-        */
+        {
+            urls: 'turn:openrelay.metered.ca:443',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        },
+        {
+            urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+            username: 'openrelayproject',
+            credential: 'openrelayproject'
+        }
     ],
     iceCandidatePoolSize: 10,
     bundlePolicy: 'max-bundle',
@@ -121,7 +128,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                         completeRef.current?.();
                     }
                     messageRef.current?.(message);
-                } catch (e) { }
+                } catch { }
             }
         };
         setDataChannel(dc);
@@ -229,14 +236,27 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             // to the application message handler.
             messageRef.current?.(message);
         }
-    }, [isSender, createOffer, sendSignaling]);
+    }, [isSender, createOffer, sendSignaling, startStallTimer]);
 
     useEffect(() => {
         if (!sessionId || sessionId === '') return;
 
         const init = async () => {
+            // Check for Secure Context / WebCrypto API
+            if (!window.isSecureContext || !window.crypto || !window.crypto.subtle) {
+                console.error('[SECURITY] Web Crypto API is not available (likely missing Secure Context).');
+                connectionStateHandlerRef.current?.('failed');
+                return; // Stop initialization
+            }
+
             // 1. Generate ECDH keys
-            myKeyPairRef.current = await generateECDHKeyPair();
+            try {
+                myKeyPairRef.current = await generateECDHKeyPair();
+            } catch (err) {
+                console.error('[CRYPTO] Failed to generate ECDH Keys:', err);
+                connectionStateHandlerRef.current?.('failed');
+                return;
+            }
 
             // 2. Setup WebSocket
             const signalingUrl = CONFIG.SIGNALING_URL;
@@ -322,7 +342,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         return () => {
             if (pcRef.current) pcRef.current.close();
             if (socketRef.current) socketRef.current.close();
-            if (relayTimeoutRef.current) clearTimeout(relayTimeoutRef.current);
+            const relayTimer = relayTimeoutRef.current;
+            if (relayTimer) clearTimeout(relayTimer);
             pcRef.current = null;
             socketRef.current = null;
         };
@@ -351,7 +372,16 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
         if (dataChannel && dataChannel.readyState === 'open') {
             try {
-                dataChannel.send(data as any);
+                if (typeof data === 'string') {
+                    dataChannel.send(data);
+                } else if (data instanceof ArrayBuffer) {
+                    dataChannel.send(data);
+                } else if (data instanceof Blob) {
+                    dataChannel.send(data);
+                } else {
+                    // @ts-expect-error TypeScript is strict about ArrayBufferLike
+                    dataChannel.send(data);
+                }
                 return true;
             } catch (e) {
                 console.error('Send error:', e);
