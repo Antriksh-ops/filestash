@@ -13,6 +13,7 @@ const RATE_LIMIT_WINDOW = 60 * 60 * 1000; // 1 Hour
 
 const ipSessionTracker = new Map(); // ip -> { count, startTime }
 const relayByteTracker = new Map(); // sessionId -> totalBytes
+const nearbyCodeMap = new Map(); // 4-digit code -> { sessionId, ip, createdAt }
 
 // Redis client for session metadata
 let redis = null;
@@ -79,6 +80,7 @@ const server = createServer(async (req, res) => {
                 const sessionData = {
                     ...metadata,
                     sessionId,
+                    creatorIp: ip,
                     chunkManifest: metadata.chunkManifest || {},
                     createdAt: Date.now(),
                     expiresAt: Date.now() + (24 * 60 * 60 * 1000) // 24h default
@@ -152,6 +154,66 @@ const server = createServer(async (req, res) => {
             });
             return;
         }
+    }
+
+    // --- Nearby Devices endpoints ---
+    if (req.method === 'POST' && req.url === '/nearby/create') {
+        const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        let body = '';
+        req.on('data', chunk => body += chunk);
+        req.on('end', async () => {
+            try {
+                const { sessionId } = JSON.parse(body);
+                // Generate a unique 4-digit code
+                let code;
+                let attempts = 0;
+                do {
+                    code = String(Math.floor(1000 + Math.random() * 9000));
+                    attempts++;
+                } while (nearbyCodeMap.has(code) && attempts < 100);
+
+                nearbyCodeMap.set(code, { sessionId, ip, createdAt: Date.now() });
+
+                // Auto-expire after 10 minutes
+                setTimeout(() => nearbyCodeMap.delete(code), 10 * 60 * 1000);
+
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ code, sessionId }));
+            } catch (e) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Invalid request' }));
+            }
+        });
+        return;
+    }
+
+    if (req.method === 'GET' && req.url.startsWith('/nearby/resolve')) {
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const code = url.searchParams.get('code');
+        const entry = nearbyCodeMap.get(code);
+
+        if (entry) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ sessionId: entry.sessionId, ip: entry.ip }));
+        } else {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Code not found or expired' }));
+        }
+        return;
+    }
+
+    if (req.method === 'GET' && req.url.startsWith('/nearby/peers')) {
+        const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        // Find all active sessions created from the same IP (same network)
+        const nearbySessions = [];
+        for (const [code, entry] of nearbyCodeMap.entries()) {
+            if (entry.ip === ip) {
+                nearbySessions.push({ code, sessionId: entry.sessionId });
+            }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ peers: nearbySessions }));
+        return;
     }
 
     res.writeHead(404);
