@@ -13,7 +13,7 @@ export async function GET() {
         const response = await fetch(`https://${appName}.metered.live/api/v1/turn/credentials?apiKey=${apiKey}`, {
             cache: 'no-store'
         });
-        
+
         if (!response.ok) {
             console.error(`Metered API responded with status: ${response.status}`);
             return NextResponse.json({ error: 'Failed to fetch ICE servers' }, { status: 502 });
