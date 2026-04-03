@@ -58,6 +58,8 @@ export function useTransferSession() {
   const sendDataRef = useRef<(data: string | ArrayBuffer) => boolean>(() => false);
   const sharedKeyRef = useRef<CryptoKey | null>(null);
   const isRelayActiveRef = useRef(false);
+  const isTransferringRef = useRef(false);
+  const waitForBufferRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   const fileChunksMapRef = useRef<Map<number, ArrayBuffer[]>>(new Map());
   const manifestRef = useRef<Record<number, string>>({});
@@ -346,7 +348,8 @@ export function useTransferSession() {
     sharedKeyRef.current = sharedKey;
     isRelayActiveRef.current = isRelayActive;
     sendSignalingRef.current = sendSignaling;
-  }, [sendData, sharedKey, isRelayActive, sendSignaling]);
+    waitForBufferRef.current = waitForBuffer;
+  }, [sendData, sharedKey, isRelayActive, sendSignaling, waitForBuffer]);
 
   useEffect(() => {
     if (sharedKey && pendingEncryptedChunksRef.current.length > 0) {
@@ -366,6 +369,7 @@ export function useTransferSession() {
 
   const handleCancel = useCallback((isInitiator = true) => {
     isCancelledRef.current = true;
+    isTransferringRef.current = false;
     if (isInitiator) {
       if (dataChannel?.readyState === 'open') {
         try { sendData(JSON.stringify({ type: 'cancel' })); } catch { }
@@ -457,6 +461,13 @@ export function useTransferSession() {
       setStatus('sending');
       window.history.pushState({}, '', `?s=${data.sessionId}`);
 
+      // Register with nearby discovery (fire-and-forget)
+      fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: data.sessionId }),
+      }).catch(() => { /* nearby is optional */ });
+
       (async () => {
         const manifest: Record<number, string> = {};
         for (let i = 0; i < selectedFiles.length; i++) {
@@ -480,74 +491,94 @@ export function useTransferSession() {
     }
   };
 
-  const startTransfer = useCallback(async () => {
-    if (files.length === 0) return;
+  const startTransfer = useCallback(async (filesToSend: File[]) => {
+    // Concurrency guard — prevent multiple parallel transfer loops
+    if (isTransferringRef.current) {
+      console.warn('[TRANSFER] Already transferring, ignoring duplicate call');
+      return;
+    }
+    if (filesToSend.length === 0) return;
+
+    isTransferringRef.current = true;
     await requestWakeLock();
     isCancelledRef.current = false;
     startTimeRef.current = Date.now();
     totalSentRef.current = 0;
 
-    await retrySend(() => sendData(JSON.stringify({ type: 'batch-metadata', files: files.map(f => ({ name: f.name, size: f.size })) })));
-    const totalBatchSize = files.reduce((acc, f) => acc + f.size, 0);
+    try {
+      // Use refs throughout so we always call the latest sendData/sharedKey
+      const send = (data: string | ArrayBuffer) => sendDataRef.current(data);
 
-    // Build set of chunks the peer already has (for resume)
-    const skipChunks = peerCompletedChunksRef.current;
-    if (skipChunks.size > 0) {
-      console.log(`[RESUME] Skipping ${skipChunks.size} chunks already received by peer`);
-    }
+      await retrySend(() => send(JSON.stringify({ type: 'batch-metadata', files: filesToSend.map(f => ({ name: f.name, size: f.size })) })));
+      const totalBatchSize = filesToSend.reduce((acc, f) => acc + f.size, 0);
 
-    for (let i = 0; i < files.length; i++) {
-      if (isCancelledRef.current) break;
-      setCurrentFileIndex(i);
-      await retrySend(() => sendData(JSON.stringify({ type: 'file-start', index: i })));
+      // Build set of chunks the peer already has (for resume)
+      const skipChunks = peerCompletedChunksRef.current;
+      if (skipChunks.size > 0) {
+        console.log(`[RESUME] Skipping ${skipChunks.size} chunks already received by peer`);
+      }
 
-      const fileId = await computeFileHash(files[i]);
-      const chunks = getFileChunks(files[i], fileId);
-      for await (const chunk of chunks) {
+      for (let i = 0; i < filesToSend.length; i++) {
         if (isCancelledRef.current) break;
+        setCurrentFileIndex(i);
+        await retrySend(() => send(JSON.stringify({ type: 'file-start', index: i })));
 
-        // --- RESUME: skip chunks the peer already has ---
-        if (skipChunks.has(chunk.chunk_id)) {
-          totalSentRef.current += chunk.size;
-          updateProgressUi(totalSentRef.current, totalBatchSize);
-          continue; // Fast-forward past this chunk
-        }
+        const fileId = await computeFileHash(filesToSend[i]);
+        const chunks = getFileChunks(filesToSend[i], fileId);
+        for await (const chunk of chunks) {
+          if (isCancelledRef.current) break;
 
-        await waitForBuffer();
-        if (isCancelledRef.current) break;
-
-        if (sharedKey) {
-          const { encryptedData, iv } = await encryptChunk(chunk.data, sharedKey);
-          const totalBuffer = new Uint8Array(4 + iv.length + encryptedData.byteLength);
-          const view = new DataView(totalBuffer.buffer);
-          view.setUint32(0, chunk.chunk_id);
-          totalBuffer.set(iv, 4);
-          totalBuffer.set(new Uint8Array(encryptedData), 4 + iv.length);
-
-          const sent = await retrySend(() => sendData(totalBuffer.buffer));
-          if (sent) {
+          // --- RESUME: skip chunks the peer already has ---
+          if (skipChunks.has(chunk.chunk_id)) {
             totalSentRef.current += chunk.size;
             updateProgressUi(totalSentRef.current, totalBatchSize);
+            continue; // Fast-forward past this chunk
+          }
+
+          await waitForBufferRef.current();
+          if (isCancelledRef.current) break;
+
+          const key = sharedKeyRef.current;
+          if (key) {
+            const { encryptedData, iv } = await encryptChunk(chunk.data, key);
+            const totalBuffer = new Uint8Array(4 + iv.length + encryptedData.byteLength);
+            const view = new DataView(totalBuffer.buffer);
+            view.setUint32(0, chunk.chunk_id);
+            totalBuffer.set(iv, 4);
+            totalBuffer.set(new Uint8Array(encryptedData), 4 + iv.length);
+
+            const sent = await retrySend(() => send(totalBuffer.buffer));
+            if (sent) {
+              totalSentRef.current += chunk.size;
+              updateProgressUi(totalSentRef.current, totalBatchSize);
+            }
           }
         }
+        await retrySend(() => send(JSON.stringify({ type: 'file-end', index: i })));
       }
-      await retrySend(() => sendData(JSON.stringify({ type: 'file-end', index: i })));
-    }
 
-    if (!isCancelledRef.current && totalSentRef.current >= totalBatchSize) {
-      setStatus('completed');
-      setEta(null);
-      setProgress(100);
-      releaseWakeLock();
-      sendData(JSON.stringify({ type: 'transfer-complete' }));
+      if (!isCancelledRef.current && totalSentRef.current >= totalBatchSize) {
+        setStatus('completed');
+        setEta(null);
+        setProgress(100);
+        releaseWakeLock();
+        send(JSON.stringify({ type: 'transfer-complete' }));
+      }
+    } finally {
+      isTransferringRef.current = false;
     }
-  }, [files, sendData, waitForBuffer, updateProgressUi, sharedKey, requestWakeLock, releaseWakeLock]);
+  }, [updateProgressUi, requestWakeLock, releaseWakeLock]);
+
+  // Trigger transfer — uses a ref for files to keep deps stable
+  const filesRef = useRef(files);
+  useEffect(() => { filesRef.current = files; }, [files]);
 
   useEffect(() => {
-    if (status === 'sending' && files.length > 0 && channelState === 'open' && isTransferStarted) {
-      startTransfer();
+    if (status === 'sending' && files.length > 0 && channelState === 'open' && isTransferStarted && !isTransferringRef.current) {
+      startTransfer(filesRef.current);
     }
-  }, [status, files, channelState, startTransfer, isTransferStarted]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, channelState, isTransferStarted]);
 
   const downloadAll = useCallback(() => {
     if (!batchMetadata) return;
