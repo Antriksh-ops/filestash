@@ -1,8 +1,8 @@
 export const CHUNK_SIZES = {
-    SMALL: 256 * 1024,      // 256KB (WebRTC safe limit)
-    MEDIUM: 256 * 1024,     // 256KB 
-    LARGE: 256 * 1024,      // 256KB
-    XLARGE: 256 * 1024      // 256KB
+    SMALL: 60 * 1024,      // 60KB (Guarantees safe passage under 65535 byte SCTP limit)
+    MEDIUM: 60 * 1024,     
+    LARGE: 60 * 1024,      
+    XLARGE: 60 * 1024      
 };
 
 import { computeHash } from './crypto';
