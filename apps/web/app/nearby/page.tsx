@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { CONFIG } from '../lib/config';
+import { CONFIG } from '../../lib/config';
 
 export default function NearbyPage() {
   const [sendToCode, setSendToCode] = useState<string>('');
