@@ -127,7 +127,7 @@ export default function NearbyPage() {
             </h4>
             
             {nearbyPeers.length > 0 ? (
-                <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-3 overflow-y-auto max-h-[360px] pr-2 custom-scrollbar">
                     {nearbyPeers.map(peer => (
                         <button
                             key={peer.code}

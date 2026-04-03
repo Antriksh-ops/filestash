@@ -139,14 +139,7 @@ export default function Home() {
 
             {/* LEFT CARD: Compact file info + sharing tools */}
             <div className="bg-(--surface) border-4 border-(--border) rounded-3xl p-6 shadow-[8px_8px_0px_0px_var(--shadow)] space-y-4 relative">
-              {/* Close button */}
-              <button
-                onClick={() => handleCancel(true)}
-                className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-(--card-hover) transition-colors"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-(--text-secondary)"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
-              </button>
-
+              
               {/* File info */}
               {displayFiles.length > 0 && (
                 <div>
@@ -160,9 +153,15 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Share link */}
+              {/* Share link & Code */}
               {sessionId && status === 'sending' && (
                 <>
+                  {/* Big Code Display */}
+                  <div className="bg-(--bg) border-4 border-(--border) rounded-2xl p-4 text-center">
+                    <p className="text-(--text-secondary) font-bold text-[10px] uppercase tracking-widest mb-1">Bridge Code</p>
+                    <p className="text-(--text) font-black text-3xl tracking-[0.2em]">{sessionId}</p>
+                  </div>
+
                   <button
                     onClick={() => { navigator.clipboard.writeText(shareLink); }}
                     className="w-full text-left px-3 py-2 bg-(--input-bg) border-2 border-(--border) rounded-xl text-(--accent-violet) font-bold text-xs truncate hover:bg-(--card-hover) transition-colors"
@@ -184,21 +183,23 @@ export default function Home() {
                         )}
                       </div>
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-col gap-2 w-full">
                       {/* Copy */}
                       <button
                         onClick={() => navigator.clipboard.writeText(shareLink)}
-                        className="px-3 py-2 bg-(--accent-yellow) text-black font-black uppercase text-[10px] rounded-lg border-2 border-(--border) shadow-[2px_2px_0px_0px_var(--shadow)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all"
+                        className="w-full px-3 py-2 bg-(--accent-yellow) text-black font-black uppercase text-[10px] rounded-lg border-2 border-(--border) shadow-[2px_2px_0px_0px_var(--shadow)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all"
                       >
                         Copy Link
                       </button>
                       {/* Share API */}
-                      <button
-                        onClick={() => navigator.share?.({ url: shareLink }).catch(() => {})}
-                        className="px-3 py-2 bg-(--accent-emerald) text-black font-black uppercase text-[10px] rounded-lg border-2 border-(--border) shadow-[2px_2px_0px_0px_var(--shadow)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all"
-                      >
-                        Share
-                      </button>
+                      {typeof navigator !== 'undefined' && navigator.share && (
+                        <button
+                          onClick={() => navigator.share?.({ url: shareLink }).catch(() => {})}
+                          className="w-full px-3 py-2 bg-(--accent-emerald) text-black font-black uppercase text-[10px] rounded-lg border-2 border-(--border) shadow-[2px_2px_0px_0px_var(--shadow)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all"
+                        >
+                          Share
+                        </button>
+                      )}
                     </div>
                   </div>
                 </>
@@ -210,7 +211,16 @@ export default function Home() {
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-(--input-bg) border-2 border-(--border) hover:bg-(--card-hover) transition-all text-left"
               >
                 <div className="w-2.5 h-2.5 rounded-full bg-(--accent-emerald) animate-pulse shrink-0" />
-                <span className="text-(--text) font-bold text-xs uppercase">Share with nearby devices</span>
+                <span className="text-(--text) font-bold text-[10px] uppercase">Share with nearby devices</span>
+              </button>
+
+              {/* Cancel Button */}
+              <button
+                onClick={() => handleCancel(true)}
+                className="w-full flex items-center justify-center gap-2 px-3 py-3 rounded-xl bg-rose-500/10 text-rose-500 border-2 border-rose-500/20 hover:bg-rose-500/20 hover:border-rose-500/50 transition-all font-black uppercase text-xs tracking-widest mt-4"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                Cancel Transfer
               </button>
             </div>
 
