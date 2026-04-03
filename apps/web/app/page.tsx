@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import DropZone from '../components/DropZone';
 import RelayPromptModal from '../components/RelayPromptModal';
 import TransferProgress from '../components/TransferProgress';
@@ -8,6 +8,7 @@ import CompletionView from '../components/CompletionView';
 import SharePanel from '../components/SharePanel';
 import FileListPanel from '../components/FileListPanel';
 import ConnectionBadge from '../components/ConnectionBadge';
+import QRScanner from '../components/QRScanner';
 import { useTransferSession } from '../hooks/useTransferSession';
 
 export default function Home() {
@@ -19,6 +20,8 @@ export default function Home() {
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
     reconnectP2P, activateRelay
   } = useTransferSession();
+
+  const [showQRScanner, setShowQRScanner] = useState(false);
 
   // Prevent default drop globally
   useEffect(() => {
@@ -34,8 +37,25 @@ export default function Home() {
   const shareLink = typeof window !== 'undefined' ? `${window.location.origin}?s=${sessionId}` : '';
   const displayFiles = files.length > 0 ? files : (batchMetadata?.files || []);
 
+  const handleQRScan = (code: string) => {
+    setShowQRScanner(false);
+    if (code) {
+      setJoinCode(code);
+      // Navigate directly to the session
+      window.location.href = `${window.location.origin}?s=${code}`;
+    }
+  };
+
   return (
     <main className="min-h-screen bg-(--bg) flex flex-col items-center py-12 px-4 font-sans overflow-x-hidden relative">
+      {/* QR Scanner Modal */}
+      {showQRScanner && (
+        <QRScanner
+          onScan={handleQRScan}
+          onClose={() => setShowQRScanner(false)}
+        />
+      )}
+
       {/* Relay Prompt Modal */}
       {showRelayPrompt && (
         <RelayPromptModal
@@ -78,24 +98,38 @@ export default function Home() {
             <div className="bg-(--surface) border-4 border-(--border) rounded-[2.5rem] p-10 shadow-[12px_12px_0px_0px_var(--shadow)] hover:shadow-[16px_16px_0px_0px_var(--shadow)] hover:-translate-y-1 transition-all duration-300">
               <h4 className="text-(--text) font-black uppercase text-lg mb-6 tracking-tight">Access an existing bridge</h4>
               <form onSubmit={handleJoinByCode} className="flex flex-col gap-6">
-                <div className="relative group">
-                  <input
-                    type="text"
-                    maxLength={6}
-                    value={joinCode}
-                    onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                    placeholder="ENTER 6-DIGIT CODE"
-                    className="w-full px-6 py-4 bg-(--input-bg) border-4 border-(--border) rounded-2xl font-black text-2xl text-(--text) placeholder:text-(--text-secondary) placeholder:opacity-40 focus:outline-none focus:ring-4 focus:ring-(--accent-yellow) transition-all uppercase"
-                  />
-                  {joinCode && (
-                    <button
-                      type="button"
-                      onClick={() => setJoinCode('')}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center bg-(--text) text-(--bg) rounded-xl hover:opacity-80 transition-colors shadow-[2px_2px_0px_0px_var(--shadow)]"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
-                    </button>
-                  )}
+                <div className="relative group flex gap-3">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      maxLength={6}
+                      value={joinCode}
+                      onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                      placeholder="ENTER 6-DIGIT CODE"
+                      className="w-full px-6 py-4 bg-(--input-bg) border-4 border-(--border) rounded-2xl font-black text-2xl text-(--text) placeholder:text-(--text-secondary) placeholder:opacity-40 focus:outline-none focus:ring-4 focus:ring-(--accent-yellow) transition-all uppercase"
+                    />
+                    {joinCode && (
+                      <button
+                        type="button"
+                        onClick={() => setJoinCode('')}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center bg-(--text) text-(--bg) rounded-xl hover:opacity-80 transition-colors shadow-[2px_2px_0px_0px_var(--shadow)]"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                      </button>
+                    )}
+                  </div>
+                  {/* QR Scan Button */}
+                  <button
+                    type="button"
+                    onClick={() => setShowQRScanner(true)}
+                    className="px-4 py-4 bg-(--accent-violet) border-4 border-(--border) rounded-2xl shadow-[4px_4px_0px_0px_var(--shadow)] hover:opacity-90 active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all shrink-0 flex items-center justify-center"
+                    title="Scan QR Code"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 7V5a2 2 0 0 1 2-2h2" /><path d="M17 3h2a2 2 0 0 1 2 2v2" /><path d="M21 17v2a2 2 0 0 1-2 2h-2" /><path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+                      <rect width="7" height="5" x="7" y="7" rx="1" /><rect width="7" height="5" x="10" y="12" rx="1" />
+                    </svg>
+                  </button>
                 </div>
                 <button
                   type="submit"

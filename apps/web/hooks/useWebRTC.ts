@@ -113,14 +113,16 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             if (relayTimeoutRef.current) clearTimeout(relayTimeoutRef.current);
         };
         dc.onclose = () => {
-            // Only update state if this is still the active channel
             if (dataChannelRef.current !== dc) return;
-            console.log('Data channel closed');
+            console.log(`Data channel closed (readyState was: ${dc.readyState}, pc state: ${pcRef.current?.connectionState})`);
             setChannelState('closed');
         };
-        dc.onmessage = (event) => {
+        dc.onerror = (e: Event) => console.warn('[P2P] Data channel error:', e);
+        dc.onmessage = (event: MessageEvent) => {
             const data = event.data;
+            // Forward raw data to the data channel message handler
             messageHandlerRef.current?.(data);
+            // Also parse JSON messages for signaling/control
             if (typeof data === 'string') {
                 try {
                     const message = JSON.parse(data);
@@ -139,14 +141,17 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         if (!pcRef.current) return;
         const pc = pcRef.current;
 
-        // Guard: don't create a new data channel if one is already open/connecting
+        // CRITICAL GUARD: do NOT renegotiate if the connection + data channel are already established.
+        // SDP renegotiation can kill the SCTP association and close the data channel mid-transfer.
         const existing = dataChannelRef.current;
         if (existing && (existing.readyState === 'open' || existing.readyState === 'connecting')) {
-            console.log('[P2P] Data channel already active, renegotiating without creating new channel');
-        } else {
-            const dc = pc.createDataChannel('file-transfer', { ordered: true });
-            setupDataChannel(dc);
+            console.log('[P2P] Data channel already active — skipping offer (would disrupt transfer)');
+            return; // FULL BAIL OUT — do not renegotiate
         }
+
+        console.log('[P2P] Creating new data channel + offer');
+        const dc = pc.createDataChannel('file-transfer', { ordered: true });
+        setupDataChannel(dc);
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -166,10 +171,14 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     // Use a ref for handleSignalingMessage so the init effect doesn't re-run
     const handleSignalingMessageRef = useRef<(message: any) => Promise<void>>(undefined);
 
-    const handleSignalingMessage = useCallback(async (message: { type?: string; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[]; action?: string }) => {
+    // Signaling message queue to prevent concurrent async processing
+    const signalingQueueRef = useRef<Array<any>>([]);
+    const isProcessingSignalingRef = useRef(false);
+
+    const processSignalingMessage = useCallback(async (message: { type?: string; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[]; action?: string }) => {
         if (!pcRef.current) return;
 
-        console.log(`[SIGNALLING] Received message: ${message.type || 'unknown'}`, message);
+        console.log(`[SIGNALLING] Processing: ${message.type || message.offer ? 'offer' : message.answer ? 'answer' : message.candidate ? 'candidate' : 'unknown'}`);
 
         if (message.type === 'force-relay' || message.action === 'force-relay') {
             console.log('Received force-relay signal from peer');
@@ -185,15 +194,10 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             const peerPubKey = await importPublicKey(new Uint8Array(message.publicKey).buffer as ArrayBuffer);
             const key = await deriveAESKey(myKeyPairRef.current.privateKey, peerPubKey);
             setSharedKey(key);
-
-            // If we are receiver, send our public key back
-            if (!isSenderRef.current && message.offer) {
-                // Handled in answer block below
-            }
         }
 
         if (message.type === 'peer_joined' && isSenderRef.current) {
-            console.log('Peer joined, re-initiating offer and starting stall timer');
+            console.log('[P2P] Peer joined — creating offer (if not already connected)');
             // Start stall timer
             if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
             stallTimerRef.current = setTimeout(() => {
@@ -202,8 +206,13 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                     stalledRef.current?.();
                 }
             }, 15000);
-            createOffer();
+            await createOffer();
         } else if (message.offer && !isSenderRef.current) {
+            // GUARD: if we already have a stable connection, ignore duplicate offers
+            if (pcRef.current.connectionState === 'connected' && dataChannelRef.current?.readyState === 'open') {
+                console.log('[P2P] Ignoring offer — already connected with open data channel');
+                return;
+            }
             console.log('Received WebRTC Offer, creating Answer...');
             await pcRef.current.setRemoteDescription(new RTCSessionDescription(message.offer));
             const answer = await pcRef.current.createAnswer();
@@ -242,11 +251,21 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             console.warn('[SIGNALLING] Peer sent a cancel signal via fallback');
             messageRef.current?.({ type: 'cancel' });
         } else {
-            // Forward any other messages (like errors or custom sync signals)
-            // to the application message handler.
             messageRef.current?.(message);
         }
     }, [createOffer, sendSignaling]);
+
+    // Queued handler: serializes signaling messages to prevent race conditions
+    const handleSignalingMessage = useCallback(async (message: any) => {
+        signalingQueueRef.current.push(message);
+        if (isProcessingSignalingRef.current) return; // already draining
+        isProcessingSignalingRef.current = true;
+        while (signalingQueueRef.current.length > 0) {
+            const next = signalingQueueRef.current.shift();
+            try { await processSignalingMessage(next); } catch (e) { console.error('[SIGNALLING] Error processing message:', e); }
+        }
+        isProcessingSignalingRef.current = false;
+    }, [processSignalingMessage]);
 
     // Keep the ref always up-to-date
     useEffect(() => {
