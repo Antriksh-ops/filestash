@@ -184,7 +184,7 @@ export function useTransferSession() {
         // Estimate total chunks (we'll refine as we receive)
         const estChunks = Math.ceil(totalSize / (256 * 1024)); // conservative estimate
         transferStateRef.current = {
-          sessionId: message.sessionId,
+          sessionId: sessionId || '',
           files: message.files,
           receivedSize: 0,
           lastUpdate: Date.now(),
