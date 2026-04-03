@@ -94,7 +94,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         dataChannelRef.current = dc;
 
         dc.binaryType = 'arraybuffer';
-        dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB threshold
+        dc.bufferedAmountLowThreshold = 256 * 1024; // 256KB — resume sending faster to keep pipe full
 
         dc.onopen = () => {
             // Only update state if this is still the active channel

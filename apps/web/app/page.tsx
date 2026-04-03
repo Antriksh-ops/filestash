@@ -25,6 +25,14 @@ export default function Home() {
 
   const [nearbyPeers, setNearbyPeers] = useState<{code: string; sessionId: string}[]>([]);
   const failCountRef = useRef(0);
+  const ownSessionIdsRef = useRef<Set<string>>(new Set());
+
+  // Track own session IDs to exclude from nearby peers
+  useEffect(() => {
+    if (sessionId) {
+      ownSessionIdsRef.current.add(sessionId);
+    }
+  }, [sessionId]);
 
   useEffect(() => {
     let interval: NodeJS.Timeout | null = null;
@@ -184,14 +192,14 @@ export default function Home() {
             </div>
 
             {/* Nearby Devices Section */}
-            {nearbyPeers.filter(p => p.sessionId !== sessionId).length > 0 && (
+            {nearbyPeers.filter(p => p.sessionId !== sessionId && !ownSessionIdsRef.current.has(p.sessionId)).length > 0 && (
               <div className="bg-(--surface) border-4 border-(--accent-yellow) rounded-[2.5rem] p-8 shadow-[8px_8px_0px_0px_var(--shadow)] transition-all">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-3 h-3 rounded-full bg-(--accent-yellow) animate-pulse" />
                   <h4 className="text-(--text) font-black uppercase text-lg tracking-tight">Devices Nearby</h4>
                 </div>
                 <div className="flex flex-col gap-3">
-                  {nearbyPeers.filter(p => p.sessionId !== sessionId).map(peer => (
+                  {nearbyPeers.filter(p => p.sessionId !== sessionId && !ownSessionIdsRef.current.has(p.sessionId)).map(peer => (
                     <button
                       key={peer.code}
                       onClick={() => { window.location.href = `/?s=${peer.sessionId}`; }}

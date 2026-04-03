@@ -54,8 +54,10 @@ export function useTransferSession() {
   const totalSentRef = useRef(0);
   const receivedSizeRef = useRef(0);
   const startTimeRef = useRef<number | null>(null);
-  const lastUiUpdateRef = useRef(0);
-  const lastFeedbackRef = useRef(0);
+  // Progress refs — transfer loop writes here (zero cost), timer reads to update React state
+  const progressRef = useRef(0);
+  const etaRef = useRef<string | null>(null);
+  const totalSizeRef = useRef(0);
 
   const sendDataRef = useRef<(data: string | ArrayBuffer) => boolean>(() => false);
   const isTransferringRef = useRef(false);
@@ -101,16 +103,13 @@ export function useTransferSession() {
     }
   }, []);
 
-  const updateProgressUi = useCallback((current: number, total: number) => {
-    const now = Date.now();
-    if (now - lastUiUpdateRef.current < 100 && current < total) return;
-    lastUiUpdateRef.current = now;
-
-    const p = (current / total) * 100;
-    setProgress(p);
+  // Write progress to refs only — NO React state updates here
+  const updateProgressRef = useCallback((current: number, total: number) => {
+    totalSizeRef.current = total;
+    progressRef.current = total > 0 ? (current / total) * 100 : 0;
 
     if (startTimeRef.current) {
-      const elapsed = (now - startTimeRef.current) / 1000;
+      const elapsed = (Date.now() - startTimeRef.current) / 1000;
       if (elapsed > 0) {
         const speed = current / elapsed;
         const remaining = total - current;
@@ -120,10 +119,19 @@ export function useTransferSession() {
           const mins = Math.floor(timeRemaining / 60);
           const secs = Math.floor(timeRemaining % 60);
           const speedMB = (speed / (1024 * 1024)).toFixed(2);
-          setEta(`${mins > 0 ? `${mins}m ` : ''}${secs}s • ${speedMB} MB/s`);
+          etaRef.current = `${mins > 0 ? `${mins}m ` : ''}${secs}s • ${speedMB} MB/s`;
         }
       }
     }
+  }, []);
+
+  // Separate timer reads refs and batches a single React state update every 500ms
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setProgress(progressRef.current);
+      setEta(etaRef.current);
+    }, 500);
+    return () => clearInterval(timer);
   }, []);
 
   const processChunk = useCallback(async (data: ArrayBuffer) => {
@@ -266,11 +274,13 @@ export function useTransferSession() {
         const meta = batchMetadataRef.current;
         if (meta && startTimeRef.current) {
           const totalSize = meta.files.reduce((acc: number, f: any) => acc + f.size, 0);
-          updateProgressUi(receivedSizeRef.current, totalSize);
+          updateProgressRef(receivedSizeRef.current, totalSize);
 
           // removed backwards progress sync
           if (receivedSizeRef.current >= totalSize) {
             setStatus('completed');
+            progressRef.current = 100;
+            etaRef.current = null;
             setEta(null);
             setProgress(100);
             if (writableRef.current) {
@@ -294,7 +304,7 @@ export function useTransferSession() {
         console.error('Decryption failed', e);
       }
     }
-  }, [updateProgressUi, sessionId, processChunk]);
+  }, [updateProgressRef, sessionId, processChunk]);
 
   const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, isRelayActive, activateRelay, reconnectP2P, signalingState } = useWebRTC({
     sessionId: sessionId || '',
@@ -504,7 +514,7 @@ export function useTransferSession() {
           // --- RESUME: skip chunks the peer already has ---
           if (skipChunks.has(chunk.chunk_id)) {
             totalSentRef.current += chunk.size;
-            updateProgressUi(totalSentRef.current, totalBatchSize);
+            updateProgressRef(totalSentRef.current, totalBatchSize);
             continue; // Fast-forward past this chunk
           }
 
@@ -519,7 +529,7 @@ export function useTransferSession() {
           const sent = await retrySend(() => send(totalBuffer.buffer));
           if (sent) {
             totalSentRef.current += chunk.size;
-            updateProgressUi(totalSentRef.current, totalBatchSize);
+            updateProgressRef(totalSentRef.current, totalBatchSize);
           }
         }
         await retrySend(() => send(JSON.stringify({ type: 'file-end', index: i })));
@@ -527,6 +537,8 @@ export function useTransferSession() {
 
       if (!isCancelledRef.current && totalSentRef.current >= totalBatchSize) {
         setStatus('completed');
+        progressRef.current = 100;
+        etaRef.current = null;
         setEta(null);
         setProgress(100);
         releaseWakeLock();
@@ -535,7 +547,7 @@ export function useTransferSession() {
     } finally {
       isTransferringRef.current = false;
     }
-  }, [updateProgressUi, requestWakeLock, releaseWakeLock]);
+  }, [updateProgressRef, requestWakeLock, releaseWakeLock]);
 
   // Trigger transfer — uses a ref for files to keep deps stable
   const filesRef = useRef(files);
