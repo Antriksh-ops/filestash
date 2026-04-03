@@ -54,9 +54,8 @@ export default function Home() {
 
     fetchNearby();
     interval = setInterval(() => {
-      if (failCountRef.current < 3) {
-        fetchNearby();
-      }
+      // Continue polling but at a conservative rate
+      fetchNearby();
     }, 8000);
 
     return () => {
@@ -185,14 +184,14 @@ export default function Home() {
             </div>
 
             {/* Nearby Devices Section */}
-            {nearbyPeers.length > 0 && (
+            {nearbyPeers.filter(p => p.sessionId !== sessionId).length > 0 && (
               <div className="bg-(--surface) border-4 border-(--accent-yellow) rounded-[2.5rem] p-8 shadow-[8px_8px_0px_0px_var(--shadow)] transition-all">
                 <div className="flex items-center gap-3 mb-6">
                   <div className="w-3 h-3 rounded-full bg-(--accent-yellow) animate-pulse" />
                   <h4 className="text-(--text) font-black uppercase text-lg tracking-tight">Devices Nearby</h4>
                 </div>
                 <div className="flex flex-col gap-3">
-                  {nearbyPeers.map(peer => (
+                  {nearbyPeers.filter(p => p.sessionId !== sessionId).map(peer => (
                     <button
                       key={peer.code}
                       onClick={() => { window.location.href = `/?s=${peer.sessionId}`; }}

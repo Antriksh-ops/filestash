@@ -38,6 +38,7 @@ export function useTransferSession() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [batchMetadata, setBatchMetadata] = useState<BatchMetadata | null>(null);
+  const batchMetadataRef = useRef<BatchMetadata | null>(null);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState<'idle' | 'sending' | 'receiving' | 'completed'>('idle');
   const [joinCode, setJoinCode] = useState('');
@@ -169,6 +170,7 @@ export function useTransferSession() {
 
       if (message.type === 'batch-metadata') {
         setBatchMetadata(message);
+        batchMetadataRef.current = message;
         fileChunksMapRef.current = new Map();
         receivedSizeRef.current = 0;
         completedChunksRef.current = [];
@@ -220,7 +222,7 @@ export function useTransferSession() {
           await writableRef.current.close();
           writableRef.current = null;
           if ('showSaveFilePicker' in window) {
-            const meta = batchMetadata?.files[message.index];
+            const meta = batchMetadataRef.current?.files[message.index];
             if (meta) {
               try {
                 const handle = await (window as any).showSaveFilePicker({ suggestedName: meta.name });
@@ -233,7 +235,7 @@ export function useTransferSession() {
         if (streamWriterRef.current && message.index > 0) {
           streamWriterRef.current.close();
           streamWriterRef.current = null;
-          const meta = batchMetadata?.files[message.index];
+          const meta = batchMetadataRef.current?.files[message.index];
           if (meta && isStreamReady()) {
             const writer = createStreamDownload(meta.name, meta.size);
             if (writer) {
@@ -242,7 +244,7 @@ export function useTransferSession() {
           }
         }
       } else if (message.type === 'progress-sync') {
-        const totalBatchSize = batchMetadata?.files.reduce((acc: number, f: any) => acc + f.size, 0) || 0;
+        const totalBatchSize = batchMetadataRef.current?.files.reduce((acc: number, f: any) => acc + f.size, 0) || 0;
         if (totalBatchSize > 0) updateProgressUi(message.received, totalBatchSize);
       } else if (message.type === 'cancel') {
         // Clean up stream writer on cancel
@@ -263,8 +265,9 @@ export function useTransferSession() {
       try {
         await processChunk(data);
 
-        if (batchMetadata && startTimeRef.current) {
-          const totalSize = batchMetadata.files.reduce((acc: number, f: any) => acc + f.size, 0);
+        const meta = batchMetadataRef.current;
+        if (meta && startTimeRef.current) {
+          const totalSize = meta.files.reduce((acc: number, f: any) => acc + f.size, 0);
           updateProgressUi(receivedSizeRef.current, totalSize);
 
           if (receivedSizeRef.current - lastFeedbackRef.current > 1024 * 1024) {
@@ -297,7 +300,7 @@ export function useTransferSession() {
         console.error('Decryption failed', e);
       }
     }
-  }, [batchMetadata, updateProgressUi, sessionId, processChunk]);
+  }, [updateProgressUi, sessionId, processChunk]);
 
   const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, isRelayActive, activateRelay, reconnectP2P, signalingState } = useWebRTC({
     sessionId: sessionId || '',
@@ -343,6 +346,7 @@ export function useTransferSession() {
     }
     setFiles([]);
     setBatchMetadata(null);
+    batchMetadataRef.current = null;
     fileChunksMapRef.current = new Map();
     completedChunksRef.current = [];
     transferStateRef.current = null;
@@ -381,6 +385,7 @@ export function useTransferSession() {
           console.log(`[RESUME] Found saved state for ${sid}: ${savedState.completedChunks.filter(Boolean).length} chunks completed`);
           setSessionId(sid);
           setBatchMetadata({ files: savedState.files, sessionId: sid });
+          batchMetadataRef.current = { files: savedState.files, sessionId: sid };
           receivedSizeRef.current = savedState.receivedSize;
           completedChunksRef.current = savedState.completedChunks;
           transferStateRef.current = savedState;
