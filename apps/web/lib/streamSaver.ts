@@ -84,7 +84,7 @@ export function createStreamDownload(filename: string, filesize?: number): Strea
   // Small delay then trigger the download by navigating an iframe to the synthetic URL
   const triggerDownload = () => {
     const a = document.createElement('a');
-    a.href = `/filedrop-download/${downloadId}`;
+    a.href = `/filedrop-download/${downloadId}/${encodeURIComponent(filename)}`;
     document.body.appendChild(a);
     a.click();
     setTimeout(() => {

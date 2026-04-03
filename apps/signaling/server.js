@@ -50,7 +50,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && req.url === '/session/create') {
-        const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+        const ip = rawIp.split(',')[0].trim();
         const now = Date.now();
 
         if (!ipSessionTracker.has(ip)) {
@@ -158,7 +159,8 @@ const server = createServer(async (req, res) => {
 
     // --- Nearby Devices endpoints ---
     if (req.method === 'POST' && req.url === '/nearby/create') {
-        const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+        const ip = rawIp.split(',')[0].trim();
         let body = '';
         req.on('data', chunk => body += chunk);
         req.on('end', async () => {
@@ -203,7 +205,8 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && req.url.startsWith('/nearby/peers')) {
-        const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+        const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
+        const ip = rawIp.split(',')[0].trim();
         // Find all active sessions created from the same IP (same network)
         const nearbySessions = [];
         for (const [code, entry] of nearbyCodeMap.entries()) {

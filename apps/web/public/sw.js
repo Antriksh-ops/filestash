@@ -57,7 +57,8 @@ self.addEventListener('fetch', (event) => {
   // Only intercept our synthetic download URLs
   if (!url.pathname.startsWith('/filedrop-download/')) return;
 
-  const downloadId = url.pathname.split('/filedrop-download/')[1];
+  const pathParts = url.pathname.split('/');
+  const downloadId = pathParts[2]; // /filedrop-download is at index 1, ID is at 2!
   const entry = streamMap.get(downloadId);
 
   if (!entry) {

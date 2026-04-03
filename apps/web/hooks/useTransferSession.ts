@@ -130,6 +130,7 @@ export function useTransferSession() {
     const view = new DataView(data);
     const chunkId = view.getUint32(0);
     const rawData = data.slice(4);
+    const chunkSize = rawData.byteLength; // Cache size before transfer
 
     // --- Write to the best available target ---
     if (writableRef.current) {
@@ -137,7 +138,7 @@ export function useTransferSession() {
       await writableRef.current.write(rawData);
     } else if (streamWriterRef.current) {
       // Mobile: Service Worker stream proxy — zero RAM accumulation
-      streamWriterRef.current.write(rawData);
+      streamWriterRef.current.write(rawData); // rawData is detached here!
     } else {
       // Fallback: in-memory accumulation (last resort)
       const currentIdx = currentFileIndex;
@@ -157,8 +158,8 @@ export function useTransferSession() {
       );
     }
 
-    receivedSizeRef.current += rawData.byteLength;
-    return rawData.byteLength;
+    receivedSizeRef.current += chunkSize;
+    return chunkSize;
   }, [currentFileIndex]);
 
   const handleRawMessage = useCallback(async (data: string | ArrayBuffer) => {
