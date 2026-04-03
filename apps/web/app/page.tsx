@@ -235,6 +235,13 @@ export default function Home() {
               onToggle={() => setShowFileList(!showFileList)}
             />
 
+            {/* DropZone inside active session allowing bi-directional flow */}
+            {(channelState === 'open' || status === 'sending') && displayFiles.length === 0 && (
+              <div className="pt-4">
+                <DropZone onFileSelect={handleFileSelect} />
+              </div>
+            )}
+
             {/* Progress */}
             <TransferProgress
               progress={progress}

@@ -53,6 +53,10 @@ export function useTransferSession() {
   const totalSentRef = useRef(0);
   const receivedSizeRef = useRef(0);
   const startTimeRef = useRef<number | null>(null);
+  
+  // Storage and sliding window pacing refs
+  const lastAckSentRef = useRef(0);
+  const peerAckSizeRef = useRef(0);
   // Progress refs — transfer loop writes here (zero cost), timer reads to update React state
   const progressRef = useRef(0);
   const etaRef = useRef<string | null>(null);
@@ -181,6 +185,8 @@ export function useTransferSession() {
         batchMetadataRef.current = message;
         fileChunksMapRef.current = new Map();
         receivedSizeRef.current = 0;
+        lastAckSentRef.current = 0;
+        peerAckSizeRef.current = 0;
         completedChunksRef.current = [];
         setCurrentFileIndex(0);
         setProgress(0);
@@ -265,6 +271,12 @@ export function useTransferSession() {
         // SENDER receives this: peer tells us which chunks they already have
         console.log(`[RESUME] Peer has ${message.completedChunks?.length || 0} completed chunks`);
         peerCompletedChunksRef.current = new Set(message.completedChunks || []);
+      } else if (message.type === 'ack') {
+        // SENDER receives this: receiver pacing acknowledgment
+        peerAckSizeRef.current = message.receivedSize;
+        if (totalSizeRef.current > 0) {
+          updateProgressRef(message.receivedSize, totalSizeRef.current);
+        }
       }
     } else if (data instanceof ArrayBuffer) {
       try {
@@ -296,6 +308,14 @@ export function useTransferSession() {
             // Update transfer state for resume (debounced inside markChunkCompleted)
             if (transferStateRef.current) {
               transferStateRef.current.receivedSize = receivedSizeRef.current;
+            }
+
+            // Provide sliding window ACKs back to sender every ~2.5MB
+            if (receivedSizeRef.current - lastAckSentRef.current >= 2.5 * 1024 * 1024) {
+              lastAckSentRef.current = receivedSizeRef.current;
+              try {
+                sendDataRef.current(JSON.stringify({ type: 'ack', receivedSize: receivedSizeRef.current }));
+              } catch {}
             }
           }
         }
@@ -377,25 +397,44 @@ export function useTransferSession() {
     handleCancelRef.current = handleCancel;
   }, [handleCancel]);
 
-  // --- Resume: check for saved state on mount ---
+  // --- Initialization: Handle ?s= Code and ?sendTo= QR Scan on Mount ---
   useEffect(() => {
     const checkResumption = async () => {
       const params = new URLSearchParams(window.location.search);
       const sid = params.get('s');
+      const sendTo = params.get('sendTo');
+
       if (sid) {
-        const savedState = await getTransferState(sid);
-        if (savedState && savedState.status === 'active' && savedState.completedChunks?.length > 0) {
-          console.log(`[RESUME] Found saved state for ${sid}: ${savedState.completedChunks.filter(Boolean).length} chunks completed`);
-          setSessionId(sid);
-          setBatchMetadata({ files: savedState.files, sessionId: sid });
-          batchMetadataRef.current = { files: savedState.files, sessionId: sid };
-          receivedSizeRef.current = savedState.receivedSize;
-          completedChunksRef.current = savedState.completedChunks;
-          transferStateRef.current = savedState;
-          setStatus('receiving');
-        } else if (files.length === 0 && !sessionId) {
-          setSessionId(sid);
-          setStatus('receiving');
+        if (!sessionId) {
+          const savedState = await getTransferState(sid);
+          if (savedState && savedState.status === 'active' && savedState.completedChunks?.length > 0) {
+            console.log(`[RESUME] Found saved state for ${sid}: ${savedState.completedChunks.filter(Boolean).length} chunks completed`);
+            setSessionId(sid);
+            setBatchMetadata({ files: savedState.files, sessionId: sid });
+            batchMetadataRef.current = { files: savedState.files, sessionId: sid };
+            receivedSizeRef.current = savedState.receivedSize;
+            completedChunksRef.current = savedState.completedChunks;
+            transferStateRef.current = savedState;
+            setStatus('receiving');
+          } else if (files.length === 0) {
+            setSessionId(sid);
+            setStatus('receiving');
+          }
+        }
+      } else if (sendTo && !sessionId && window.location.pathname === '/') {
+        // We are pairing via QR scan or link. Instantly create a session and bridge BOTH devices.
+        const newSid = Math.random().toString(36).substring(2, 8).toUpperCase();
+        try {
+          const ws = new WebSocket(`${CONFIG.SIGNALING_URL}?sessionId=${sendTo}&role=sender`);
+          ws.onopen = () => {
+             ws.send(JSON.stringify({ type: 'redirect', newSessionId: newSid }));
+             setTimeout(() => ws.close(), 1000);
+          };
+          setSessionId(newSid);
+          setStatus('receiving'); // We're bridged, awaiting file drops
+          window.history.replaceState({}, '', `?s=${newSid}`);
+        } catch (e) {
+          console.warn('Failed to redirect nearby target', e);
         }
       }
     };
@@ -422,51 +461,7 @@ export function useTransferSession() {
     }
   }, [channelState, status]);
 
-  const handleFileSelect = async (selectedFiles: File[]) => {
-    isCancelledRef.current = false;
-    setFiles(selectedFiles);
-
-    try {
-      const response = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/session/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: selectedFiles.map(f => ({ name: f.name, size: f.size })) })
-      });
-      const data = await response.json();
-      setSessionId(data.sessionId);
-      setStatus('sending');
-      window.history.pushState({}, '', `?s=${data.sessionId}`);
-
-      // Register with nearby discovery (fire-and-forget)
-      fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: data.sessionId }),
-      }).catch(() => { /* nearby is optional */ });
-
-      // Handle redirect for the /nearby pairing flow
-      const params = new URLSearchParams(window.location.search);
-      const sendTo = params.get('sendTo');
-      if (sendTo) {
-        try {
-          const ws = new WebSocket(`${CONFIG.SIGNALING_URL}?sessionId=${sendTo}&role=sender`);
-          ws.onopen = () => {
-             ws.send(JSON.stringify({ type: 'redirect', newSessionId: data.sessionId }));
-             setTimeout(() => ws.close(), 1000);
-          };
-        } catch (e) {
-          console.warn('Failed to redirect nearby target', e);
-        }
-      }
-
-      // No manifest construction needed for native DTLS flow
-    } catch {
-      const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
-      setSessionId(sid);
-      setStatus('sending');
-      window.history.pushState({}, '', `?s=${sid}`);
-    }
-  };
+  // handleFileSelect moved below startTransfer
 
   const startTransfer = useCallback(async (filesToSend: File[]) => {
     // Concurrency guard — prevent multiple parallel transfer loops
@@ -516,7 +511,12 @@ export function useTransferSession() {
             continue;
           }
 
-          // Backpressure: only wait when buffer is actually full
+          // Sliding Window Pacing: wait if we've blasted more than 10MB ahead of receiver
+          while (totalSentRef.current - peerAckSizeRef.current > 10 * 1024 * 1024 && !isCancelledRef.current) {
+            await new Promise(r => setTimeout(r, 50));
+          }
+
+          // Backpressure: only wait when OS buffer is actually full
           await waitForBufferRef.current();
           if (isCancelledRef.current) break;
 
@@ -525,11 +525,10 @@ export function useTransferSession() {
           new DataView(totalBuffer.buffer).setUint32(0, chunk.chunk_id);
           totalBuffer.set(new Uint8Array(chunk.data), 4);
 
-          // DIRECT send — no retrySend wrapper. If the channel is open, send() always succeeds.
-          // Backpressure is handled by waitForBuffer above.
+          // DIRECT send — no retrySend wrapper
           send(totalBuffer.buffer);
           totalSentRef.current += chunk.size;
-          updateProgressRef(totalSentRef.current, totalBatchSize);
+          // Progress is now driven exclusively by receiver ACKs above
         }
         await retrySend(() => send(JSON.stringify({ type: 'file-end', index: i })));
       }
@@ -547,6 +546,57 @@ export function useTransferSession() {
       isTransferringRef.current = false;
     }
   }, [updateProgressRef, requestWakeLock, releaseWakeLock]);
+
+  const handleFileSelect = useCallback(async (selectedFiles: File[]) => {
+    isCancelledRef.current = false;
+    setFiles(selectedFiles);
+
+    // If we are already connected to a session, just start sending through the existing bridge.
+    if (sessionId) {
+      if (status !== 'receiving') setStatus('sending');
+      startTransfer(selectedFiles);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/session/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: selectedFiles.map(f => ({ name: f.name, size: f.size })) })
+      });
+      const data = await response.json();
+      setSessionId(data.sessionId);
+      setStatus('sending');
+      window.history.pushState({}, '', `?s=${data.sessionId}`);
+
+      // Register with nearby discovery (fire-and-forget)
+      fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: data.sessionId }),
+      }).catch(() => { /* nearby is optional */ });
+
+      // Handle redirect for the /nearby pairing flow
+      const params = new URLSearchParams(window.location.search);
+      const sendTo = params.get('sendTo');
+      if (sendTo) {
+        try {
+          const ws = new WebSocket(`${CONFIG.SIGNALING_URL}?sessionId=${sendTo}&role=sender`);
+          ws.onopen = () => {
+             ws.send(JSON.stringify({ type: 'redirect', newSessionId: data.sessionId }));
+             setTimeout(() => ws.close(), 1000);
+          };
+        } catch (e) {
+          console.warn('Failed to redirect nearby target', e);
+        }
+      }
+    } catch {
+      const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
+      setSessionId(sid);
+      setStatus('sending');
+      window.history.pushState({}, '', `?s=${sid}`);
+    }
+  }, [sessionId, startTransfer, status]);
 
   // Trigger transfer — uses a ref for files to keep deps stable
   const filesRef = useRef(files);
