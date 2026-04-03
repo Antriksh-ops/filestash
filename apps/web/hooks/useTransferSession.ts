@@ -244,9 +244,6 @@ export function useTransferSession() {
             }
           }
         }
-      } else if (message.type === 'progress-sync') {
-        const totalBatchSize = batchMetadataRef.current?.files.reduce((acc: number, f: any) => acc + f.size, 0) || 0;
-        if (totalBatchSize > 0) updateProgressUi(message.received, totalBatchSize);
       } else if (message.type === 'cancel') {
         // Clean up stream writer on cancel
         if (streamWriterRef.current) {
@@ -271,11 +268,7 @@ export function useTransferSession() {
           const totalSize = meta.files.reduce((acc: number, f: any) => acc + f.size, 0);
           updateProgressUi(receivedSizeRef.current, totalSize);
 
-          if (receivedSizeRef.current - lastFeedbackRef.current > 1024 * 1024) {
-            lastFeedbackRef.current = receivedSizeRef.current;
-            sendDataRef.current(JSON.stringify({ type: 'progress-sync', received: receivedSizeRef.current }));
-          }
-
+          // removed backwards progress sync
           if (receivedSizeRef.current >= totalSize) {
             setStatus('completed');
             setEta(null);
@@ -442,6 +435,21 @@ export function useTransferSession() {
         body: JSON.stringify({ sessionId: data.sessionId }),
       }).catch(() => { /* nearby is optional */ });
 
+      // Handle redirect for the /nearby pairing flow
+      const params = new URLSearchParams(window.location.search);
+      const sendTo = params.get('sendTo');
+      if (sendTo) {
+        try {
+          const ws = new WebSocket(`${CONFIG.SIGNALING_URL}?sessionId=${sendTo}&role=sender`);
+          ws.onopen = () => {
+             ws.send(JSON.stringify({ type: 'redirect', newSessionId: data.sessionId }));
+             setTimeout(() => ws.close(), 1000);
+          };
+        } catch (e) {
+          console.warn('Failed to redirect nearby target', e);
+        }
+      }
+
       // No manifest construction needed for native DTLS flow
     } catch {
       const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -582,9 +590,23 @@ export function useTransferSession() {
     URL.revokeObjectURL(url);
   }, [batchMetadata]);
 
-  const handleJoinByCode = (e: React.FormEvent) => {
+  const handleJoinByCode = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (joinCode.length === 6) {
+    if (joinCode.length === 4) {
+      try {
+        const res = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/resolve?code=${joinCode}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.sessionId) {
+            setSessionId(data.sessionId);
+            setStatus('receiving');
+            window.history.pushState({}, '', `?s=${data.sessionId}`);
+            return;
+          }
+        }
+      } catch {}
+      setError('Invalid or expired 4-digit code');
+    } else if (joinCode.length === 6) {
       setSessionId(joinCode.toUpperCase());
       setStatus('receiving');
       window.history.pushState({}, '', `?s=${joinCode.toUpperCase()}`);

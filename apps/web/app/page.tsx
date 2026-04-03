@@ -148,7 +148,7 @@ export default function Home() {
                       maxLength={6}
                       value={joinCode}
                       onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                      placeholder="ENTER 6-DIGIT CODE"
+                      placeholder="ENTER 4 OR 6-DIGIT CODE"
                       className="w-full px-6 py-4 bg-(--input-bg) border-4 border-(--border) rounded-2xl font-black text-2xl text-(--text) placeholder:text-(--text-secondary) placeholder:opacity-40 focus:outline-none focus:ring-4 focus:ring-(--accent-yellow) transition-all uppercase"
                     />
                     {joinCode && (
