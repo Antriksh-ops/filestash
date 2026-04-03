@@ -45,6 +45,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const stalledRef = useRef(onStalled);
     const stallTimerRef = useRef<NodeJS.Timeout | null>(null);
     const relayTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const isSenderRef = useRef(isSender);
 
     useEffect(() => {
         messageHandlerRef.current = onDataChannelMessage;
@@ -65,6 +66,10 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     useEffect(() => {
         stalledRef.current = onStalled;
     }, [onStalled]);
+
+    useEffect(() => {
+        isSenderRef.current = isSender;
+    }, [isSender]);
 
     const sendSignaling = useCallback((msg: unknown) => {
         const json = JSON.stringify(msg);
@@ -130,16 +135,6 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         setChannelState(dc.readyState);
     }, []);
 
-    const startStallTimer = useCallback(() => {
-        if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
-        stallTimerRef.current = setTimeout(() => {
-            if (pcRef.current?.connectionState !== 'connected') {
-                console.warn('[P2P] Connection process stalled (15s). Notifying UI...');
-                stalledRef.current?.();
-            }
-        }, 15000);
-    }, []);
-
     const createOffer = useCallback(async () => {
         if (!pcRef.current) return;
         const pc = pcRef.current;
@@ -168,6 +163,9 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         });
     }, [setupDataChannel, sendSignaling]);
 
+    // Use a ref for handleSignalingMessage so the init effect doesn't re-run
+    const handleSignalingMessageRef = useRef<(message: any) => Promise<void>>(undefined);
+
     const handleSignalingMessage = useCallback(async (message: { type?: string; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[]; action?: string }) => {
         if (!pcRef.current) return;
 
@@ -189,16 +187,23 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             setSharedKey(key);
 
             // If we are receiver, send our public key back
-            if (!isSender && message.offer) {
+            if (!isSenderRef.current && message.offer) {
                 // Handled in answer block below
             }
         }
 
-        if (message.type === 'peer_joined' && isSender) {
+        if (message.type === 'peer_joined' && isSenderRef.current) {
             console.log('Peer joined, re-initiating offer and starting stall timer');
-            startStallTimer(); // Only start the 15s timeout once we know a peer is actually listening
+            // Start stall timer
+            if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
+            stallTimerRef.current = setTimeout(() => {
+                if (pcRef.current?.connectionState !== 'connected') {
+                    console.warn('[P2P] Connection process stalled (15s). Notifying UI...');
+                    stalledRef.current?.();
+                }
+            }, 15000);
             createOffer();
-        } else if (message.offer && !isSender) {
+        } else if (message.offer && !isSenderRef.current) {
             console.log('Received WebRTC Offer, creating Answer...');
             await pcRef.current.setRemoteDescription(new RTCSessionDescription(message.offer));
             const answer = await pcRef.current.createAnswer();
@@ -219,7 +224,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 const head = pendingCandidates.current.shift();
                 if (head) await pcRef.current.addIceCandidate(head);
             }
-        } else if (message.answer && isSender) {
+        } else if (message.answer && isSenderRef.current) {
             await pcRef.current.setRemoteDescription(new RTCSessionDescription(message.answer));
 
             // Process queued candidates
@@ -241,10 +246,19 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             // to the application message handler.
             messageRef.current?.(message);
         }
-    }, [isSender, createOffer, sendSignaling, startStallTimer]);
+    }, [createOffer, sendSignaling]);
 
+    // Keep the ref always up-to-date
+    useEffect(() => {
+        handleSignalingMessageRef.current = handleSignalingMessage;
+    }, [handleSignalingMessage]);
+
+    // ===== MAIN INIT EFFECT =====
+    // Only depends on sessionId — all other callbacks are accessed via refs
     useEffect(() => {
         if (!sessionId || sessionId === '') return;
+
+        let destroyed = false;
 
         const init = async () => {
             // Check for Secure Context / WebCrypto API
@@ -263,6 +277,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 return;
             }
 
+            if (destroyed) return;
+
             // 2. Setup WebSocket
             const signalingUrl = CONFIG.SIGNALING_URL;
             console.log('DEBUG: Initializing WebRTC with signaling URL:', signalingUrl);
@@ -272,6 +288,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             setSignalingState(socket.readyState);
 
             socket.onopen = () => {
+                if (destroyed) return;
                 console.log('[SIGNALLING] WebSocket Connected');
                 setSignalingState(WebSocket.OPEN);
                 while (queueRef.current.length > 0) {
@@ -281,18 +298,20 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
             socket.onerror = (e) => {
                 console.error('[SIGNALLING] WebSocket Error:', e);
-                setSignalingState(socket.readyState);
+                if (!destroyed) setSignalingState(socket.readyState);
             };
 
             socket.onclose = (e) => {
                 console.warn('[SIGNALLING] WebSocket Closed:', e.code, e.reason);
-                setSignalingState(WebSocket.CLOSED);
+                if (!destroyed) setSignalingState(WebSocket.CLOSED);
             };
 
             socket.onmessage = (event) => {
+                if (destroyed) return;
                 if (typeof event.data === 'string') {
                     const message = JSON.parse(event.data);
-                    handleSignalingMessage(message);
+                    // Use the ref to always call the latest version of handleSignalingMessage
+                    handleSignalingMessageRef.current?.(message);
                 } else {
                     // Binary RELAY data
                     messageHandlerRef.current?.(event.data);
@@ -302,6 +321,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             // 3. Setup RTCPeerConnection
             const iceServers = await getIceServers();
             console.log(`[P2P] Fetched ${iceServers.length} ICE servers securely`);
+
+            if (destroyed) return;
 
             const rtcConfig: RTCConfiguration = {
                 ...RTC_CONFIG_BASE,
@@ -326,6 +347,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             };
 
             pc.onconnectionstatechange = () => {
+                if (destroyed) return;
                 console.log(`[P2P] Connection state changed: ${pc.connectionState}`);
                 if (pc.iceConnectionState) {
                     console.log(`[P2P] ICE Connection state: ${pc.iceConnectionState}`);
@@ -355,7 +377,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 console.log(`[P2P] ICE Gathering state: ${pc.iceGatheringState}`);
             };
 
-            if (isSender) {
+            if (isSenderRef.current) {
                 // Don't create offer yet — wait for peer_joined signal
                 // This prevents creating duplicate data channels
                 console.log('[P2P] Sender ready, waiting for peer to join...');
@@ -369,6 +391,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         init();
 
         return () => {
+            destroyed = true;
             if (pcRef.current) pcRef.current.close();
             if (socketRef.current) socketRef.current.close();
             const relayTimer = relayTimeoutRef.current;
@@ -376,7 +399,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             pcRef.current = null;
             socketRef.current = null;
         };
-    }, [sessionId, isSender, handleSignalingMessage, createOffer, setupDataChannel, sendSignaling]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sessionId]);
 
     const waitForBuffer = useCallback(() => {
         if (isRelayActive && socketRef.current) {
@@ -439,10 +463,10 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             }
         }
         // Sender re-creates offer to renegotiate
-        if (isSender) {
+        if (isSenderRef.current) {
             createOffer();
         }
-    }, [isSender, createOffer]);
+    }, [createOffer]);
 
     return {
         peerConnection,

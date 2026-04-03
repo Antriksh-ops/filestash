@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { CONFIG } from '../../lib/config';
 
 interface NearbyPeer {
@@ -15,23 +15,57 @@ export default function NearbyPage() {
   const [nearbyPeers, setNearbyPeers] = useState<NearbyPeer[]>([]);
   const [status, setStatus] = useState<'idle' | 'creating' | 'joining' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [serverReachable, setServerReachable] = useState(true);
+  const failCountRef = useRef(0);
 
-  // Poll for nearby peers on same network
+  // Poll for nearby peers on same network (with backoff on repeated failures)
   useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    let cancelled = false;
+
     const fetchNearby = async () => {
       try {
-        const res = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/peers`);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/peers`, {
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
         if (res.ok) {
           const data = await res.json();
-          setNearbyPeers(data.peers || []);
+          if (!cancelled) {
+            setNearbyPeers(data.peers || []);
+            setServerReachable(true);
+            failCountRef.current = 0;
+          }
+        } else {
+          // Server responded but route doesn't exist yet — not critical
+          failCountRef.current++;
+          if (failCountRef.current >= 2 && !cancelled) {
+            setServerReachable(false);
+          }
         }
       } catch {
-        // Silently fail — server might not be reachable
+        // Network error or timeout — silently degrade
+        failCountRef.current++;
+        if (failCountRef.current >= 2 && !cancelled) {
+          setServerReachable(false);
+        }
       }
     };
+
     fetchNearby();
-    const interval = setInterval(fetchNearby, 5000);
-    return () => clearInterval(interval);
+    // Poll less aggressively: every 8s if reachable, stop if not
+    interval = setInterval(() => {
+      if (failCountRef.current < 3) {
+        fetchNearby();
+      }
+    }, 8000);
+
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+    };
   }, []);
 
   const createNearbySession = async () => {
@@ -39,26 +73,42 @@ export default function NearbyPage() {
     setError(null);
     try {
       // First create a normal session
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
       const sessionRes = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/session/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: [], nearby: true })
+        body: JSON.stringify({ files: [], nearby: true }),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
       const sessionData = await sessionRes.json();
 
       // Then register a nearby short code for it
+      const controller2 = new AbortController();
+      const timeout2 = setTimeout(() => controller2.abort(), 8000);
       const nearbyRes = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: sessionData.sessionId })
+        body: JSON.stringify({ sessionId: sessionData.sessionId }),
+        signal: controller2.signal,
       });
+      clearTimeout(timeout2);
+
+      if (!nearbyRes.ok) {
+        throw new Error(`Server returned ${nearbyRes.status}`);
+      }
+
       const nearbyData = await nearbyRes.json();
 
       setGeneratedCode(nearbyData.code);
       setGeneratedSessionId(sessionData.sessionId);
       setStatus('idle');
-    } catch {
-      setError('Failed to create nearby session. Is the signaling server running?');
+    } catch (e) {
+      const msg = e instanceof Error && e.name === 'AbortError'
+        ? 'Request timed out. The signaling server may be waking up — try again in 30s.'
+        : 'Failed to create nearby session. The signaling server may need a redeployment with the latest code.';
+      setError(msg);
       setStatus('error');
     }
   };
@@ -70,7 +120,12 @@ export default function NearbyPage() {
     setStatus('joining');
     setError(null);
     try {
-      const res = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/resolve?code=${code}`);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/resolve?code=${code}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
       if (res.ok) {
         const data = await res.json();
         window.location.href = `/?s=${data.sessionId}`;
@@ -78,8 +133,11 @@ export default function NearbyPage() {
         setError('Code not found or expired. Check the code and try again.');
         setStatus('error');
       }
-    } catch {
-      setError('Failed to resolve code. Is the signaling server running?');
+    } catch (e) {
+      const msg = e instanceof Error && e.name === 'AbortError'
+        ? 'Request timed out. The signaling server may be starting up — try again in 30s.'
+        : 'Failed to resolve code. Is the signaling server running?';
+      setError(msg);
       setStatus('error');
     }
   };
@@ -110,6 +168,18 @@ export default function NearbyPage() {
             When both devices are on the same Wi-Fi, data travels directly through your local network at near-gigabit speeds. It never leaves your building.
           </p>
         </div>
+
+        {/* Server status warning */}
+        {!serverReachable && (
+          <div className="p-4 rounded-2xl border-4 border-(--accent-yellow) bg-(--surface) text-center space-y-2">
+            <p className="text-(--accent-yellow) font-bold text-sm">
+              ⚠️ Signaling server is unreachable or hasn&apos;t been deployed with nearby endpoints.
+            </p>
+            <p className="text-(--text-secondary) text-xs font-medium">
+              The nearby feature requires the signaling server to have the <code>/nearby/*</code> routes deployed. If using Render free tier, the server may need ~60s to wake up.
+            </p>
+          </div>
+        )}
 
         {error && (
           <div className="p-4 rounded-2xl border-4 border-(--accent-rose) bg-(--surface) text-center">
@@ -195,4 +265,3 @@ export default function NearbyPage() {
     </main>
   );
 }
-
