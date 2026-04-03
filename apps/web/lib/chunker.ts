@@ -1,17 +1,18 @@
 export const CHUNK_SIZES = {
-    SMALL: 256 * 1024,      // 256KB
-    MEDIUM: 2 * 1024 * 1024,   // 2MB
-    LARGE: 8 * 1024 * 1024,    // 8MB
-    XLARGE: 32 * 1024 * 1024   // 32MB
+    SMALL: 256 * 1024,      // 256KB (WebRTC safe limit)
+    MEDIUM: 256 * 1024,     // 256KB 
+    LARGE: 256 * 1024,      // 256KB
+    XLARGE: 256 * 1024      // 256KB
 };
 
 import { computeHash } from './crypto';
 
-export function getAdaptiveChunkSize(fileSize: number): number {
-    if (fileSize < 10 * 1024 * 1024) return CHUNK_SIZES.SMALL;
-    if (fileSize < 500 * 1024 * 1024) return CHUNK_SIZES.MEDIUM;
-    if (fileSize < 5 * 1024 * 1024 * 1024) return CHUNK_SIZES.LARGE;
-    return CHUNK_SIZES.XLARGE;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function getAdaptiveChunkSize(_fileSize: number): number {
+    // WebRTC DataChannel message limit is generally 256KB.
+    // Sending larger chunks (e.g. 2MB or 32MB) directly to dc.send() 
+    // causes an immediate "OperationError: Failure to send data" and drops the connection.
+    return CHUNK_SIZES.SMALL;
 }
 
 export interface Chunk {
