@@ -397,12 +397,11 @@ export function useTransferSession() {
     handleCancelRef.current = handleCancel;
   }, [handleCancel]);
 
-  // --- Initialization: Handle ?s= Code and ?sendTo= QR Scan on Mount ---
+  // --- Initialization: Handle ?s= Code on Mount ---
   useEffect(() => {
     const checkResumption = async () => {
       const params = new URLSearchParams(window.location.search);
       const sid = params.get('s');
-      const sendTo = params.get('sendTo');
 
       if (sid) {
         if (!sessionId) {
@@ -420,21 +419,6 @@ export function useTransferSession() {
             setSessionId(sid);
             setStatus('receiving');
           }
-        }
-      } else if (sendTo && !sessionId && window.location.pathname === '/') {
-        // We are pairing via QR scan or link. Instantly create a session and bridge BOTH devices.
-        const newSid = Math.random().toString(36).substring(2, 8).toUpperCase();
-        try {
-          const ws = new WebSocket(`${CONFIG.SIGNALING_URL}?sessionId=${sendTo}&role=sender`);
-          ws.onopen = () => {
-             ws.send(JSON.stringify({ type: 'redirect', newSessionId: newSid }));
-             setTimeout(() => ws.close(), 1000);
-          };
-          setSessionId(newSid);
-          setStatus('receiving'); // We're bridged, awaiting file drops
-          window.history.replaceState({}, '', `?s=${newSid}`);
-        } catch (e) {
-          console.warn('Failed to redirect nearby target', e);
         }
       }
     };
@@ -528,7 +512,7 @@ export function useTransferSession() {
           // DIRECT send — no retrySend wrapper
           send(totalBuffer.buffer);
           totalSentRef.current += chunk.size;
-          // Progress is now driven exclusively by receiver ACKs above
+          updateProgressRef(totalSentRef.current, totalBatchSize);
         }
         await retrySend(() => send(JSON.stringify({ type: 'file-end', index: i })));
       }
@@ -576,20 +560,6 @@ export function useTransferSession() {
         body: JSON.stringify({ sessionId: data.sessionId }),
       }).catch(() => { /* nearby is optional */ });
 
-      // Handle redirect for the /nearby pairing flow
-      const params = new URLSearchParams(window.location.search);
-      const sendTo = params.get('sendTo');
-      if (sendTo) {
-        try {
-          const ws = new WebSocket(`${CONFIG.SIGNALING_URL}?sessionId=${sendTo}&role=sender`);
-          ws.onopen = () => {
-             ws.send(JSON.stringify({ type: 'redirect', newSessionId: data.sessionId }));
-             setTimeout(() => ws.close(), 1000);
-          };
-        } catch (e) {
-          console.warn('Failed to redirect nearby target', e);
-        }
-      }
     } catch {
       const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
       setSessionId(sid);
@@ -603,11 +573,12 @@ export function useTransferSession() {
   useEffect(() => { filesRef.current = files; }, [files]);
 
   useEffect(() => {
-    if (status === 'sending' && files.length > 0 && channelState === 'open' && isTransferStarted && !isTransferringRef.current) {
+    if (status === 'sending' && files.length > 0 && channelState === 'open' && !isTransferringRef.current) {
+      setIsTransferStarted(true);
       startTransfer(filesRef.current);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, channelState, isTransferStarted]);
+  }, [status, channelState]);
 
   const downloadAll = useCallback(() => {
     if (!batchMetadata) return;

@@ -3,30 +3,22 @@
 import React, { useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { CONFIG } from '../../lib/config';
+import { useTransferSession } from '../../hooks/useTransferSession';
 
 export default function NearbyPage() {
-  const [sendToCode, setSendToCode] = useState<string>('');
+  const { sessionId, handleFileSelect } = useTransferSession();
   const [nearbyPeers, setNearbyPeers] = useState<{code: string; sessionId: string}[]>([]);
   const [inputCode, setInputCode] = useState('');
 
+  // Start an empty session when landing on this standby page
   useEffect(() => {
-    // Generate a unique 6-digit receiver code for this session
-    const stored = sessionStorage.getItem('nearby_sendToCode') || Math.random().toString(36).substring(2, 8).toUpperCase();
-    sessionStorage.setItem('nearby_sendToCode', stored);
-    setSendToCode(stored);
+    if (!sessionId) {
+      handleFileSelect([]); // Triggers session creation without files
+    }
+  }, [sessionId, handleFileSelect]);
 
-    // Ping WebSocket waiting for a mobile device to send us a redirect token
-    const ws = new WebSocket(`${CONFIG.SIGNALING_URL}?sessionId=${stored}&role=receiver`);
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === 'redirect' && msg.newSessionId) {
-          window.location.href = `/?s=${msg.newSessionId}`;
-        }
-      } catch {}
-    };
-
-    // Also poll for active network peers so the user can connect out if they want
+  useEffect(() => {
+    // Poll for active network peers so the user can connect out if they want
     let interval: NodeJS.Timeout | null = null;
     let cancelled = false;
     const fetchNearby = async () => {
@@ -45,7 +37,6 @@ export default function NearbyPage() {
     return () => {
       cancelled = true;
       if (interval) clearInterval(interval);
-      ws.close();
     };
   }, []);
 
@@ -56,7 +47,7 @@ export default function NearbyPage() {
     }
   };
 
-  const qrUrl = typeof window !== 'undefined' && sendToCode ? `${window.location.origin}/?sendTo=${sendToCode}` : '';
+  const qrUrl = typeof window !== 'undefined' && sessionId ? `${window.location.origin}/?s=${sessionId}` : '';
 
   return (
     <main className="min-h-[calc(100vh-[80px])] bg-(--bg) flex items-center justify-center py-20 px-4">
@@ -88,7 +79,7 @@ export default function NearbyPage() {
             </div>
 
             <div className="flex gap-2">
-              {sendToCode.split('').map((char, i) => (
+              {(sessionId || '').split('').map((char: string, i: number) => (
                 <div key={i} className="w-10 h-10 flex flex-col items-center justify-center bg-(--input-bg) border-2 border-(--border) rounded-xl">
                     <span className="font-black text-xl text-(--text)">{char}</span>
                 </div>

@@ -9,7 +9,6 @@ interface TransferProgressProps {
     signalingState: number;
     channelState: RTCDataChannelState;
     isRelayActive: boolean;
-    isTransferStarted: boolean;
     receivedBytes: number;
     isPaused: boolean;
     togglePause: () => void;
@@ -23,7 +22,6 @@ export default function TransferProgress({
     signalingState,
     channelState,
     isRelayActive,
-    isTransferStarted,
     receivedBytes,
     isPaused,
     togglePause,
@@ -32,14 +30,14 @@ export default function TransferProgress({
     const statusLabel = React.useMemo(() => {
         if (status === 'completed') return 'SUCCESS';
         if (channelState === 'open') {
-            if (status === 'sending') return isTransferStarted ? 'SENDING' : 'READY';
+            if (status === 'sending') return 'SENDING';
             return receivedBytes > 0 ? 'RECEIVING' : 'WAITING FOR SENDER';
         }
         if (status === 'sending') {
             return signalingState === WebSocket.OPEN ? 'WAITING FOR PEER' : 'INITIALIZING...';
         }
         return 'CONNECTING...';
-    }, [status, channelState, isTransferStarted, receivedBytes, signalingState]);
+    }, [status, channelState, receivedBytes, signalingState]);
 
     return (
         <div className="space-y-4">
@@ -71,7 +69,7 @@ export default function TransferProgress({
                     <p className="text-(--text-secondary) font-black text-xs uppercase tracking-widest flex items-center gap-2">
                         <span className="animate-pulse">●</span> {eta}
                     </p>
-                    {isSender && status === 'sending' && isTransferStarted && (
+                    {isSender && status === 'sending' && (
                         <button
                             onClick={togglePause}
                             className={`px-4 py-2 font-black uppercase text-xs rounded-xl border-2 border-(--border) shadow-[2px_2px_0px_0px_var(--shadow)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all ${isPaused ? 'bg-(--accent-yellow) text-black' : 'bg-(--surface) text-(--text-secondary) hover:bg-(--card-hover)'}`}

@@ -10,67 +10,17 @@ import FileListPanel from '../components/FileListPanel';
 import ConnectionBadge from '../components/ConnectionBadge';
 import QRScanner from '../components/QRScanner';
 import { useTransferSession } from '../hooks/useTransferSession';
-import { CONFIG } from '../lib/config';
-import { useRef } from 'react';
 
 export default function Home() {
   const {
     sessionId, files, batchMetadata, progress, status, joinCode, setJoinCode,
-    isTransferStarted, setIsTransferStarted, showFileList, setShowFileList,
+    showFileList, setShowFileList,
     error, setError, eta, showRelayPrompt, setShowRelayPrompt, currentFileIndex,
     receivedBytes, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
     reconnectP2P, activateRelay, isPaused, togglePause
   } = useTransferSession();
 
-  const [nearbyPeers, setNearbyPeers] = useState<{code: string; sessionId: string}[]>([]);
-  const failCountRef = useRef(0);
-  const ownSessionIdsRef = useRef<Set<string>>(new Set());
-
-  // Track own session IDs to exclude from nearby peers
-  useEffect(() => {
-    if (sessionId) {
-      ownSessionIdsRef.current.add(sessionId);
-    }
-  }, [sessionId]);
-
-  useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
-    let cancelled = false;
-
-    const fetchNearby = async () => {
-      try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
-        const res = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/peers`, {
-          signal: controller.signal,
-        });
-        clearTimeout(timeout);
-        if (res.ok) {
-          const data = await res.json();
-          if (!cancelled) {
-            setNearbyPeers(data.peers || []);
-            failCountRef.current = 0;
-          }
-        } else {
-          failCountRef.current++;
-        }
-      } catch {
-        failCountRef.current++;
-      }
-    };
-
-    fetchNearby();
-    interval = setInterval(() => {
-      // Continue polling but at a conservative rate
-      fetchNearby();
-    }, 8000);
-
-    return () => {
-      cancelled = true;
-      if (interval) clearInterval(interval);
-    };
-  }, []);
 
   const [showQRScanner, setShowQRScanner] = useState(false);
 
@@ -143,75 +93,38 @@ export default function Home() {
         )}
 
         {status === 'idle' ? (
-          <div className="w-full space-y-12">
-            <DropZone onFileSelect={handleFileSelect} />
-
-            <div className="bg-(--surface) border-4 border-(--border) rounded-[2.5rem] p-10 shadow-[12px_12px_0px_0px_var(--shadow)] hover:shadow-[16px_16px_0px_0px_var(--shadow)] hover:-translate-y-1 transition-all duration-300">
-              <h4 className="text-(--text) font-black uppercase text-lg mb-6 tracking-tight">Access an existing bridge</h4>
-              <form onSubmit={handleJoinByCode} className="flex flex-col gap-6">
-                <div className="relative group flex gap-3">
-                  <div className="relative flex-1">
-                    <input
-                      type="text"
-                      maxLength={6}
-                      value={joinCode}
-                      onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                      placeholder="ENTER 4 OR 6-DIGIT CODE"
-                      className="w-full px-6 py-4 bg-(--input-bg) border-4 border-(--border) rounded-2xl font-black text-2xl text-(--text) placeholder:text-(--text-secondary) placeholder:opacity-40 focus:outline-none focus:ring-4 focus:ring-(--accent-yellow) transition-all uppercase"
-                    />
-                    {joinCode && (
-                      <button
-                        type="button"
-                        onClick={() => setJoinCode('')}
-                        className="absolute right-4 top-1/2 -translate-y-1/2 w-10 h-10 flex items-center justify-center bg-(--text) text-(--bg) rounded-xl hover:opacity-80 transition-colors shadow-[2px_2px_0px_0px_var(--shadow)]"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
-                      </button>
-                    )}
-                  </div>
-                  {/* QR Scan Button */}
-                  <button
-                    type="button"
-                    onClick={() => setShowQRScanner(true)}
-                    className="px-4 py-4 bg-(--accent-violet) border-4 border-(--border) rounded-2xl shadow-[4px_4px_0px_0px_var(--shadow)] hover:opacity-90 active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all shrink-0 flex items-center justify-center"
-                    title="Scan QR Code"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M3 7V5a2 2 0 0 1 2-2h2" /><path d="M17 3h2a2 2 0 0 1 2 2v2" /><path d="M21 17v2a2 2 0 0 1-2 2h-2" /><path d="M7 21H5a2 2 0 0 1-2-2v-2" />
-                      <rect width="7" height="5" x="7" y="7" rx="1" /><rect width="7" height="5" x="10" y="12" rx="1" />
-                    </svg>
-                  </button>
-                </div>
-                <button
-                  type="submit"
-                  className="w-full py-4 bg-(--accent-violet) text-black font-black uppercase text-xl rounded-2xl border-4 border-(--border) shadow-[8px_8px_0px_0px_var(--shadow)] hover:opacity-90 active:translate-x-1 active:translate-y-1 active:shadow-none transition-all"
-                >
-                  Join
-                </button>
-              </form>
+          <div className="w-full max-w-2xl mx-auto flex flex-col items-center gap-10 py-10">
+            {/* 1. Primary Action */}
+            <div className="w-full">
+              <DropZone onFileSelect={handleFileSelect} />
             </div>
 
-            {/* Nearby Devices Section */}
-            {nearbyPeers.filter(p => p.sessionId !== sessionId && !ownSessionIdsRef.current.has(p.sessionId)).length > 0 && (
-              <div className="bg-(--surface) border-4 border-(--accent-yellow) rounded-[2.5rem] p-8 shadow-[8px_8px_0px_0px_var(--shadow)] transition-all">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="w-3 h-3 rounded-full bg-(--accent-yellow) animate-pulse" />
-                  <h4 className="text-(--text) font-black uppercase text-lg tracking-tight">Devices Nearby</h4>
-                </div>
-                <div className="flex flex-col gap-3">
-                  {nearbyPeers.filter(p => p.sessionId !== sessionId && !ownSessionIdsRef.current.has(p.sessionId)).map(peer => (
-                    <button
-                      key={peer.code}
-                      onClick={() => { window.location.href = `/?s=${peer.sessionId}`; }}
-                      className="w-full flex items-center justify-between p-4 rounded-xl border-4 border-(--border) bg-(--input-bg) hover:bg-(--card-hover) hover:-translate-y-1 transition-all shadow-[4px_4px_0px_0px_var(--shadow)] hover:shadow-[6px_6px_0px_0px_var(--shadow)] active:translate-x-1 active:translate-y-1 active:shadow-none"
-                    >
-                      <span className="font-black text-(--text) text-xl uppercase tracking-widest">{peer.code}</span>
-                      <span className="text-sm font-black text-(--accent-emerald) uppercase px-4 py-2 bg-(--surface) rounded-lg border-2 border-(--border)">Connect</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* 2. Secondary Actions (Join or Nearby) */}
+            <div className="w-full flex flex-col md:flex-row items-stretch gap-4">
+              <form onSubmit={handleJoinByCode} className="flex-1 relative">
+                <input
+                  type="text"
+                  maxLength={6}
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                  placeholder="HAVE A CODE?"
+                  className="w-full px-6 py-4 bg-(--bg) border-4 border-(--border) rounded-2xl font-black text-center text-lg text-(--text) placeholder:opacity-50 focus:outline-none focus:ring-4 focus:ring-(--accent-yellow) transition-all shadow-[4px_4px_0px_0px_var(--shadow)] uppercase"
+                />
+                {joinCode && (
+                  <button type="submit" className="absolute right-3 top-1/2 -translate-y-1/2 bg-(--accent-violet) text-black font-black uppercase text-xs px-4 py-2 rounded-xl transition-all hover:bg-(--accent-yellow)">
+                    JOIN
+                  </button>
+                )}
+              </form>
+
+              <button
+                onClick={() => window.location.href = '/nearby'}
+                className="flex-1 py-4 bg-(--surface) text-(--text) font-black uppercase text-sm border-4 border-(--border) rounded-2xl shadow-[4px_4px_0px_0px_var(--shadow)] hover:bg-(--card-hover) active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all flex items-center justify-center gap-3"
+              >
+                <div className="w-3 h-3 rounded-full bg-(--accent-emerald) animate-pulse" />
+                Nearby Sharing
+              </button>
+            </div>
           </div>
         ) : (
           <div className="w-full bg-(--surface) border-4 border-(--border) rounded-3xl p-10 space-y-8 shadow-[12px_12px_0px_0px_var(--shadow)] mx-auto">
@@ -250,22 +163,12 @@ export default function Home() {
               signalingState={signalingState}
               channelState={channelState}
               isRelayActive={isRelayActive}
-              isTransferStarted={isTransferStarted}
               receivedBytes={receivedBytes}
               isPaused={isPaused}
               togglePause={togglePause}
               isSender={files.length > 0}
             />
 
-            {/* Start Transfer Button */}
-            {status === 'sending' && channelState === 'open' && !isTransferStarted && (
-              <button
-                onClick={() => setIsTransferStarted(true)}
-                className="w-full py-6 bg-(--accent-yellow) hover:opacity-90 text-black font-black uppercase text-2xl tracking-widest rounded-2xl border-4 border-(--border) transition-all shadow-[8px_8px_0px_0px_var(--shadow)] active:translate-x-1 active:translate-y-1 active:shadow-none mt-4"
-              >
-                Start Transfer
-              </button>
-            )}
 
             {/* Completion View */}
             {status === 'completed' && (
