@@ -5,8 +5,6 @@ import DropZone from '../components/DropZone';
 import RelayPromptModal from '../components/RelayPromptModal';
 import TransferProgress from '../components/TransferProgress';
 import CompletionView from '../components/CompletionView';
-import SharePanel from '../components/SharePanel';
-import FileListPanel from '../components/FileListPanel';
 import ConnectionBadge from '../components/ConnectionBadge';
 import QRScanner from '../components/QRScanner';
 import { useTransferSession } from '../hooks/useTransferSession';
@@ -14,8 +12,7 @@ import { useTransferSession } from '../hooks/useTransferSession';
 export default function Home() {
   const {
     sessionId, files, batchMetadata, progress, status, joinCode, setJoinCode,
-    showFileList, setShowFileList,
-    error, setError, eta, showRelayPrompt, setShowRelayPrompt, currentFileIndex,
+    error, setError, eta, showRelayPrompt, setShowRelayPrompt,
     receivedBytes, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
     reconnectP2P, activateRelay, isPaused, togglePause
@@ -126,73 +123,141 @@ export default function Home() {
               </button>
             </div>
           </div>
-        ) : (
-          <div className="w-full bg-(--surface) border-4 border-(--border) rounded-3xl p-10 space-y-8 shadow-[12px_12px_0px_0px_var(--shadow)] mx-auto">
-            {/* Share Panel FIRST (sender only) — most important for single-device use case */}
-            {sessionId && status === 'sending' && (
-              <SharePanel sessionId={sessionId} shareLink={shareLink} peerConnected={channelState === 'open'} />
-            )}
-
-            {/* Connection Badge */}
-            <ConnectionBadge
-              signalingState={signalingState}
-              channelState={channelState}
-              isRelayActive={isRelayActive}
-            />
-
-            {/* File List */}
-            <FileListPanel
+        ) : status === 'completed' ? (
+          <div className="w-full max-w-2xl mx-auto py-10">
+            <CompletionView
               files={displayFiles}
-              currentFileIndex={currentFileIndex}
-              showFileList={showFileList}
-              onToggle={() => setShowFileList(!showFileList)}
-            />
-
-            {/* DropZone inside active session allowing bi-directional flow */}
-            {(channelState === 'open' || status === 'sending') && displayFiles.length === 0 && (
-              <div className="pt-4">
-                <DropZone onFileSelect={handleFileSelect} />
-              </div>
-            )}
-
-            {/* Progress */}
-            <TransferProgress
-              progress={progress}
-              eta={eta}
-              status={status}
-              signalingState={signalingState}
-              channelState={channelState}
-              isRelayActive={isRelayActive}
-              receivedBytes={receivedBytes}
-              isPaused={isPaused}
-              togglePause={togglePause}
+              startTime={Date.now()}
               isSender={files.length > 0}
+              onDownload={downloadAll}
+              onNewTransfer={() => handleCancel(true)}
             />
+          </div>
+        ) : (
+          /* ── ACTIVE SESSION: Compact ToffeeShare-style layout ── */
+          <div className="w-full grid grid-cols-1 md:grid-cols-[320px_1fr] gap-8 items-start pt-4">
 
+            {/* LEFT CARD: Compact file info + sharing tools */}
+            <div className="bg-(--surface) border-4 border-(--border) rounded-3xl p-6 shadow-[8px_8px_0px_0px_var(--shadow)] space-y-4 relative">
+              {/* Close button */}
+              <button
+                onClick={() => handleCancel(true)}
+                className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-lg hover:bg-(--card-hover) transition-colors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-(--text-secondary)"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+              </button>
 
-            {/* Completion View */}
-            {status === 'completed' && (
-              <CompletionView
-                files={displayFiles}
-                startTime={Date.now()}
-                isSender={files.length > 0}
-                onDownload={downloadAll}
-                onNewTransfer={() => handleCancel(true)}
-              />
-            )}
+              {/* File info */}
+              {displayFiles.length > 0 && (
+                <div>
+                  <p className="text-(--text) font-black text-sm uppercase truncate pr-8">{displayFiles[0]?.name || 'File'}</p>
+                  <p className="text-(--text-secondary) font-bold text-xs">
+                    {displayFiles[0] && 'size' in displayFiles[0]
+                      ? `${(displayFiles[0].size / (1024 * 1024)).toFixed(2)} MB`
+                      : ''}
+                    {displayFiles.length > 1 && ` + ${displayFiles.length - 1} more`}
+                  </p>
+                </div>
+              )}
 
-            {/* Cancel Button */}
-            <button
-              onClick={() => handleCancel(true)}
-              className="w-full py-3 bg-(--surface) hover:bg-(--card-hover) text-(--text-secondary) font-black uppercase text-xs tracking-widest rounded-xl border-2 border-(--border) transition-all shadow-[4px_4px_0px_0px_var(--shadow)] active:translate-x-1 active:translate-y-1 active:shadow-none"
-            >
-              Cancel Bridge
-            </button>
+              {/* Share link */}
+              {sessionId && status === 'sending' && (
+                <>
+                  <button
+                    onClick={() => { navigator.clipboard.writeText(shareLink); }}
+                    className="w-full text-left px-3 py-2 bg-(--input-bg) border-2 border-(--border) rounded-xl text-(--accent-violet) font-bold text-xs truncate hover:bg-(--card-hover) transition-colors"
+                  >
+                    {shareLink}
+                  </button>
+
+                  {/* QR Code + Social share row */}
+                  <div className="flex items-start gap-3">
+                    <div className="bg-white p-2 rounded-xl border-2 border-(--border) shrink-0">
+                      <div className="w-[100px] h-[100px]">
+                        {typeof window !== 'undefined' && (
+                          <img 
+                            src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(shareLink)}`}
+                            alt="QR Code"
+                            width={100}
+                            height={100}
+                          />
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {/* Copy */}
+                      <button
+                        onClick={() => navigator.clipboard.writeText(shareLink)}
+                        className="px-3 py-2 bg-(--accent-yellow) text-black font-black uppercase text-[10px] rounded-lg border-2 border-(--border) shadow-[2px_2px_0px_0px_var(--shadow)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all"
+                      >
+                        Copy Link
+                      </button>
+                      {/* Share API */}
+                      <button
+                        onClick={() => navigator.share?.({ url: shareLink }).catch(() => {})}
+                        className="px-3 py-2 bg-(--accent-emerald) text-black font-black uppercase text-[10px] rounded-lg border-2 border-(--border) shadow-[2px_2px_0px_0px_var(--shadow)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all"
+                      >
+                        Share
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Nearby devices option */}
+              <button
+                onClick={() => window.location.href = '/nearby'}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-(--input-bg) border-2 border-(--border) hover:bg-(--card-hover) transition-all text-left"
+              >
+                <div className="w-2.5 h-2.5 rounded-full bg-(--accent-emerald) animate-pulse shrink-0" />
+                <span className="text-(--text) font-bold text-xs uppercase">Share with nearby devices</span>
+              </button>
+            </div>
+
+            {/* RIGHT SIDE: Status + Progress */}
+            <div className="flex flex-col justify-center gap-6 py-4">
+              {/* Headline */}
+              <div>
+                <h2 className="text-(--text) font-black text-3xl md:text-4xl uppercase tracking-tighter leading-tight">
+                  {channelState === 'open'
+                    ? (progress > 0 ? 'Transfer in progress' : 'Connected. Sending...')
+                    : 'Sharing your files directly from your device'}
+                </h2>
+                <p className="text-(--text-secondary) font-bold text-sm mt-3 max-w-md leading-relaxed">
+                  {channelState === 'open'
+                    ? 'Files are flowing directly between devices. Do not close this tab.'
+                    : 'Share the link or scan the QR code on another device to begin the transfer. Keep this tab open.'}
+                </p>
+              </div>
+
+              {/* Connection + Progress inline */}
+              <div className="space-y-3">
+                <ConnectionBadge
+                  signalingState={signalingState}
+                  channelState={channelState}
+                  isRelayActive={isRelayActive}
+                />
+                <TransferProgress
+                  progress={progress}
+                  eta={eta}
+                  status={status}
+                  signalingState={signalingState}
+                  channelState={channelState}
+                  isRelayActive={isRelayActive}
+                  receivedBytes={receivedBytes}
+                  isPaused={isPaused}
+                  togglePause={togglePause}
+                  isSender={files.length > 0}
+                />
+              </div>
+            </div>
+
           </div>
         )}
       </div>
 
-      {/* Feature Cards */}
+      {/* Feature Cards — only show on idle */}
+      {status === 'idle' && (
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8 w-full max-w-4xl px-4 mt-8 pb-12">
         <div className="p-8 bg-(--accent-yellow) border-4 border-(--border) rounded-3xl shadow-[8px_8px_0px_0px_var(--shadow)] text-center space-y-2">
           <p className="text-black font-black text-xl uppercase">Unlimited</p>
@@ -207,6 +272,7 @@ export default function Home() {
           <p className="text-black font-bold text-xs uppercase opacity-70">Direct P2P core. The fastest way to move data locally or globally.</p>
         </div>
       </div>
+      )}
     </main>
   );
 }
