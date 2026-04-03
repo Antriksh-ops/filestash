@@ -533,10 +533,36 @@ export function useTransferSession() {
 
   const handleFileSelect = useCallback(async (selectedFiles: File[]) => {
     isCancelledRef.current = false;
+
+    // If there's an existing session but the connection is dead, reset fully first
+    if (sessionId && channelState !== 'open') {
+      // Connection was lost — clean up stale state before starting fresh
+      isTransferringRef.current = false;
+      setFiles([]);
+      setBatchMetadata(null);
+      batchMetadataRef.current = null;
+      fileChunksMapRef.current = new Map();
+      completedChunksRef.current = [];
+      transferStateRef.current = null;
+      peerCompletedChunksRef.current = new Set();
+      receivedSizeRef.current = 0;
+      totalSentRef.current = 0;
+      progressRef.current = 0;
+      etaRef.current = null;
+      setProgress(0);
+      startTimeRef.current = null;
+      setEta(null);
+      setSessionId(null);
+      setIsTransferStarted(false);
+      setError(null);
+      window.history.pushState({}, '', window.location.pathname);
+      // Fall through to create a brand new session below
+    }
+
     setFiles(selectedFiles);
 
-    // If we are already connected to a session, just start sending through the existing bridge.
-    if (sessionId) {
+    // If we are already connected to a session with an open channel, just start sending
+    if (sessionId && channelState === 'open') {
       if (status !== 'receiving') setStatus('sending');
       startTransfer(selectedFiles);
       return;
@@ -566,7 +592,7 @@ export function useTransferSession() {
       setStatus('sending');
       window.history.pushState({}, '', `?s=${sid}`);
     }
-  }, [sessionId, startTransfer, status]);
+  }, [sessionId, channelState, startTransfer, status]);
 
   // Trigger transfer — uses a ref for files to keep deps stable
   const filesRef = useRef(files);
