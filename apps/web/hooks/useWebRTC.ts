@@ -1,10 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import {
-    generateECDHKeyPair,
-    exportPublicKey,
-    importPublicKey,
-    deriveAESKey
-} from '../lib/crypto';
 import { CONFIG } from '../lib/config';
 import { getIceServers } from '../lib/turn';
 
@@ -29,13 +23,11 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const [dataChannel, setDataChannel] = useState<RTCDataChannel | null>(null);
     const [channelState, setChannelState] = useState<RTCDataChannelState>('connecting');
     const [isRelayActive, setIsRelayActive] = useState(false);
-    const [sharedKey, setSharedKey] = useState<CryptoKey | null>(null);
     const [signalingState, setSignalingState] = useState<number>(WebSocket.CLOSED);
 
     const socketRef = useRef<WebSocket | null>(null);
     const pcRef = useRef<RTCPeerConnection | null>(null);
     const dataChannelRef = useRef<RTCDataChannel | null>(null);
-    const myKeyPairRef = useRef<CryptoKeyPair | null>(null);
     const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
     const queueRef = useRef<string[]>([]);
     const messageHandlerRef = useRef(onDataChannelMessage);
@@ -156,16 +148,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
 
-        // Include public key in offer if available
-        let publicKeyBuffer = null;
-        if (myKeyPairRef.current) {
-            publicKeyBuffer = await exportPublicKey(myKeyPairRef.current.publicKey);
-        }
-
-        sendSignaling({
-            offer,
-            publicKey: publicKeyBuffer ? Array.from(new Uint8Array(publicKeyBuffer)) : null
-        });
+        sendSignaling({ offer });
     }, [setupDataChannel, sendSignaling]);
 
     // Use a ref for handleSignalingMessage so the init effect doesn't re-run
@@ -188,13 +171,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             return;
         }
 
-        // Handle Public Key Exchange
-        if (message.publicKey && myKeyPairRef.current) {
-            console.log('Received peer public key, deriving shared secret...');
-            const peerPubKey = await importPublicKey(new Uint8Array(message.publicKey).buffer as ArrayBuffer);
-            const key = await deriveAESKey(myKeyPairRef.current.privateKey, peerPubKey);
-            setSharedKey(key);
-        }
+
 
         if (message.type === 'peer_joined' && isSenderRef.current) {
             console.log('[P2P] Peer joined — creating offer (if not already connected)');
@@ -218,15 +195,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             const answer = await pcRef.current.createAnswer();
             await pcRef.current.setLocalDescription(answer);
 
-            let publicKeyBuffer = null;
-            if (myKeyPairRef.current) {
-                publicKeyBuffer = await exportPublicKey(myKeyPairRef.current.publicKey);
-            }
-
-            sendSignaling({
-                answer,
-                publicKey: publicKeyBuffer ? Array.from(new Uint8Array(publicKeyBuffer)) : null
-            });
+            sendSignaling({ answer });
 
             // Process queued candidates
             while (pendingCandidates.current.length > 0) {
@@ -287,16 +256,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 return; // Stop initialization
             }
 
-            // 1. Generate ECDH keys
-            try {
-                myKeyPairRef.current = await generateECDHKeyPair();
-            } catch (err) {
-                console.error('[CRYPTO] Failed to generate ECDH Keys:', err);
-                connectionStateHandlerRef.current?.('failed');
-                return;
-            }
 
-            if (destroyed) return;
 
             // 2. Setup WebSocket
             const signalingUrl = CONFIG.SIGNALING_URL;
@@ -413,8 +373,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             destroyed = true;
             if (pcRef.current) pcRef.current.close();
             if (socketRef.current) socketRef.current.close();
-            const relayTimer = relayTimeoutRef.current;
-            if (relayTimer) clearTimeout(relayTimer);
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+            if (relayTimeoutRef.current) clearTimeout(relayTimeoutRef.current);
             pcRef.current = null;
             socketRef.current = null;
         };
@@ -493,7 +453,6 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         channelState,
         sendData,
         waitForBuffer,
-        sharedKey,
         isRelayActive,
         activateRelay,
         reconnectP2P,

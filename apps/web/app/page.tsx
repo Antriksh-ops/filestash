@@ -10,16 +10,60 @@ import FileListPanel from '../components/FileListPanel';
 import ConnectionBadge from '../components/ConnectionBadge';
 import QRScanner from '../components/QRScanner';
 import { useTransferSession } from '../hooks/useTransferSession';
+import { CONFIG } from '../lib/config';
+import { useRef } from 'react';
 
 export default function Home() {
   const {
     sessionId, files, batchMetadata, progress, status, joinCode, setJoinCode,
     isTransferStarted, setIsTransferStarted, showFileList, setShowFileList,
     error, setError, eta, showRelayPrompt, setShowRelayPrompt, currentFileIndex,
-    receivedBytes, channelState, signalingState, sharedKey,
+    receivedBytes, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
-    reconnectP2P, activateRelay
+    reconnectP2P, activateRelay, isPaused, togglePause
   } = useTransferSession();
+
+  const [nearbyPeers, setNearbyPeers] = useState<{code: string; sessionId: string}[]>([]);
+  const failCountRef = useRef(0);
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    let cancelled = false;
+
+    const fetchNearby = async () => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/peers`, {
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled) {
+            setNearbyPeers(data.peers || []);
+            failCountRef.current = 0;
+          }
+        } else {
+          failCountRef.current++;
+        }
+      } catch {
+        failCountRef.current++;
+      }
+    };
+
+    fetchNearby();
+    interval = setInterval(() => {
+      if (failCountRef.current < 3) {
+        fetchNearby();
+      }
+    }, 8000);
+
+    return () => {
+      cancelled = true;
+      if (interval) clearInterval(interval);
+    };
+  }, []);
 
   const [showQRScanner, setShowQRScanner] = useState(false);
 
@@ -139,6 +183,28 @@ export default function Home() {
                 </button>
               </form>
             </div>
+
+            {/* Nearby Devices Section */}
+            {nearbyPeers.length > 0 && (
+              <div className="bg-(--surface) border-4 border-(--accent-yellow) rounded-[2.5rem] p-8 shadow-[8px_8px_0px_0px_var(--shadow)] transition-all">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-3 h-3 rounded-full bg-(--accent-yellow) animate-pulse" />
+                  <h4 className="text-(--text) font-black uppercase text-lg tracking-tight">Devices Nearby</h4>
+                </div>
+                <div className="flex flex-col gap-3">
+                  {nearbyPeers.map(peer => (
+                    <button
+                      key={peer.code}
+                      onClick={() => { window.location.href = `/?s=${peer.sessionId}`; }}
+                      className="w-full flex items-center justify-between p-4 rounded-xl border-4 border-(--border) bg-(--input-bg) hover:bg-(--card-hover) hover:-translate-y-1 transition-all shadow-[4px_4px_0px_0px_var(--shadow)] hover:shadow-[6px_6px_0px_0px_var(--shadow)] active:translate-x-1 active:translate-y-1 active:shadow-none"
+                    >
+                      <span className="font-black text-(--text) text-xl uppercase tracking-widest">{peer.code}</span>
+                      <span className="text-sm font-black text-(--accent-emerald) uppercase px-4 py-2 bg-(--surface) rounded-lg border-2 border-(--border)">Connect</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="w-full bg-(--surface) border-4 border-(--border) rounded-3xl p-10 space-y-8 shadow-[12px_12px_0px_0px_var(--shadow)] mx-auto">
@@ -152,7 +218,6 @@ export default function Home() {
               signalingState={signalingState}
               channelState={channelState}
               isRelayActive={isRelayActive}
-              sharedKey={sharedKey}
             />
 
             {/* File List */}
@@ -170,10 +235,12 @@ export default function Home() {
               status={status}
               signalingState={signalingState}
               channelState={channelState}
-              sharedKey={sharedKey}
               isRelayActive={isRelayActive}
               isTransferStarted={isTransferStarted}
               receivedBytes={receivedBytes}
+              isPaused={isPaused}
+              togglePause={togglePause}
+              isSender={files.length > 0}
             />
 
             {/* Start Transfer Button */}

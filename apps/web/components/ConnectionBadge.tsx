@@ -6,10 +6,9 @@ interface ConnectionBadgeProps {
   signalingState: number;
   channelState: RTCDataChannelState;
   isRelayActive: boolean;
-  sharedKey: CryptoKey | null;
 }
 
-export default function ConnectionBadge({ signalingState, channelState, isRelayActive, sharedKey }: ConnectionBadgeProps) {
+export default function ConnectionBadge({ signalingState, channelState, isRelayActive }: ConnectionBadgeProps) {
   let color = 'bg-zinc-400';
   let pulse = false;
   let label = 'Initializing...';
@@ -26,7 +25,7 @@ export default function ConnectionBadge({ signalingState, channelState, isRelayA
     icon = '🔄';
   } else if (channelState === 'open') {
     color = 'bg-emerald-400';
-    label = sharedKey ? 'Connected — P2P Direct 🔒' : 'Connected — P2P Direct';
+    label = 'Connected — P2P Direct';
     icon = '⚡';
   } else if (channelState === 'connecting') {
     color = 'bg-amber-400';

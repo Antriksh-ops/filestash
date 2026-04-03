@@ -8,10 +8,12 @@ interface TransferProgressProps {
     status: 'idle' | 'sending' | 'receiving' | 'completed';
     signalingState: number;
     channelState: RTCDataChannelState;
-    sharedKey: CryptoKey | null;
     isRelayActive: boolean;
     isTransferStarted: boolean;
     receivedBytes: number;
+    isPaused: boolean;
+    togglePause: () => void;
+    isSender: boolean;
 }
 
 export default function TransferProgress({
@@ -20,10 +22,12 @@ export default function TransferProgress({
     status,
     signalingState,
     channelState,
-    sharedKey,
     isRelayActive,
     isTransferStarted,
     receivedBytes,
+    isPaused,
+    togglePause,
+    isSender,
 }: TransferProgressProps) {
     const statusLabel = React.useMemo(() => {
         if (status === 'completed') return 'SUCCESS';
@@ -46,12 +50,7 @@ export default function TransferProgress({
                 <span className="text-black font-black uppercase text-[10px] tracking-widest bg-(--accent-yellow) px-3 py-1 rounded-lg border-2 border-(--border)">
                     {statusLabel}
                 </span>
-                {sharedKey && (
-                    <span className="text-black font-black uppercase text-[10px] tracking-widest bg-(--accent-emerald) px-3 py-1 rounded-lg border-2 border-(--border) flex items-center gap-1">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
-                        Encrypted
-                    </span>
-                )}
+
                 {isRelayActive && (
                     <span className="text-white font-black uppercase text-[10px] tracking-widest bg-(--accent-rose) px-3 py-1 rounded-lg border-2 border-(--border)">
                         Relay Mode
@@ -68,9 +67,19 @@ export default function TransferProgress({
                 </div>
             </div>
             {eta && status !== 'completed' && (
-                <p className="text-(--text-secondary) font-black text-xs uppercase text-right tracking-widest flex items-center justify-end gap-2">
-                    <span className="animate-pulse">●</span> {eta}
-                </p>
+                <div className="flex justify-between items-center w-full">
+                    <p className="text-(--text-secondary) font-black text-xs uppercase tracking-widest flex items-center gap-2">
+                        <span className="animate-pulse">●</span> {eta}
+                    </p>
+                    {isSender && status === 'sending' && isTransferStarted && (
+                        <button
+                            onClick={togglePause}
+                            className={`px-4 py-2 font-black uppercase text-xs rounded-xl border-2 border-(--border) shadow-[2px_2px_0px_0px_var(--shadow)] active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all ${isPaused ? 'bg-(--accent-yellow) text-black' : 'bg-(--surface) text-(--text-secondary) hover:bg-(--card-hover)'}`}
+                        >
+                            {isPaused ? 'RESUME' : 'PAUSE'}
+                        </button>
+                    )}
+                </div>
             )}
         </div>
     );

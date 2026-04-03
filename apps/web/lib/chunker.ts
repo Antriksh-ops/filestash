@@ -5,24 +5,17 @@ export const CHUNK_SIZES = {
     XLARGE: 250 * 1024      
 };
 
-import { computeHash } from './crypto';
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-export function getAdaptiveChunkSize(_fileSize: number): number {
-    // WebRTC DataChannel message limit is generally 256KB.
-    // Sending larger chunks (e.g. 2MB or 32MB) directly to dc.send() 
-    // causes an immediate "OperationError: Failure to send data" and drops the connection.
-    return CHUNK_SIZES.SMALL;
-}
-
 export interface Chunk {
     chunk_id: number;
     file_id: string;
     offset: number;
     size: number;
     data: ArrayBuffer;
-    hash: string;
-    encrypted: boolean;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function getAdaptiveChunkSize(_fileSize: number): number {
+    return CHUNK_SIZES.SMALL;
 }
 
 export async function* getFileChunks(file: File, fileId: string): AsyncGenerator<Chunk> {
@@ -35,7 +28,6 @@ export async function* getFileChunks(file: File, fileId: string): AsyncGenerator
         const end = Math.min(offset + chunkSize, fileSize);
         const blob = file.slice(offset, end);
         const arrayBuffer = await blob.arrayBuffer();
-        const hash = await computeHash(arrayBuffer);
 
         yield {
             chunk_id: chunkId++,
@@ -43,8 +35,6 @@ export async function* getFileChunks(file: File, fileId: string): AsyncGenerator
             offset,
             size: arrayBuffer.byteLength,
             data: arrayBuffer,
-            hash,
-            encrypted: false,
         };
 
         offset = end;

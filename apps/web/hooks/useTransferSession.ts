@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useWebRTC } from './useWebRTC';
 import { getFileChunks } from '../lib/chunker';
-import { computeHash, computeFileHash, encryptChunk, decryptChunk } from '../lib/crypto';
+import { computeFileHash } from '../lib/crypto';
 import { CONFIG } from '../lib/config';
 import { saveTransferState, getTransferState, deleteTransferState, markChunkCompleted, flushPendingSave, type TransferState } from '../lib/db';
 import { registerStreamSW, needsStreamFallback, isStreamReady, createStreamDownload } from '../lib/streamSaver';
@@ -47,6 +47,7 @@ export function useTransferSession() {
   const [eta, setEta] = useState<string | null>(null);
   const [showRelayPrompt, setShowRelayPrompt] = useState(false);
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
+  const [isPaused, setIsPaused] = useState(false);
 
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const totalSentRef = useRef(0);
@@ -56,15 +57,12 @@ export function useTransferSession() {
   const lastFeedbackRef = useRef(0);
 
   const sendDataRef = useRef<(data: string | ArrayBuffer) => boolean>(() => false);
-  const sharedKeyRef = useRef<CryptoKey | null>(null);
-  const isRelayActiveRef = useRef(false);
   const isTransferringRef = useRef(false);
+  const isPausedRef = useRef(false);
   const waitForBufferRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   const fileChunksMapRef = useRef<Map<number, ArrayBuffer[]>>(new Map());
-  const manifestRef = useRef<Record<number, string>>({});
   const writableRef = useRef<FileSystemWritableFileStream | null>(null);
-  const pendingEncryptedChunksRef = useRef<ArrayBuffer[]>([]);
   const isCancelledRef = useRef(false);
   const handleCancelRef = useRef<(isInitiator?: boolean) => void>(null);
 
@@ -127,34 +125,25 @@ export function useTransferSession() {
     }
   }, []);
 
-  const processEncryptedChunk = useCallback(async (data: ArrayBuffer, key: CryptoKey) => {
+  const processChunk = useCallback(async (data: ArrayBuffer) => {
     const view = new DataView(data);
     const chunkId = view.getUint32(0);
-    const iv = new Uint8Array(data, 4, 12);
-    const encryptedData = data.slice(16);
-
-    const decrypted = await decryptChunk(encryptedData, key, iv);
-    const hash = await computeHash(decrypted);
-    const expectedHash = manifestRef.current[chunkId];
-
-    if (expectedHash && hash !== expectedHash) {
-      console.error(`INTEGRITY ERROR: Chunk ${chunkId} hash mismatch!`);
-    }
+    const rawData = data.slice(4);
 
     // --- Write to the best available target ---
     if (writableRef.current) {
       // Desktop: FileSystem Access API
-      await writableRef.current.write(decrypted);
+      await writableRef.current.write(rawData);
     } else if (streamWriterRef.current) {
       // Mobile: Service Worker stream proxy — zero RAM accumulation
-      streamWriterRef.current.write(decrypted);
+      streamWriterRef.current.write(rawData);
     } else {
       // Fallback: in-memory accumulation (last resort)
       const currentIdx = currentFileIndex;
       if (!fileChunksMapRef.current.has(currentIdx)) {
         fileChunksMapRef.current.set(currentIdx, []);
       }
-      fileChunksMapRef.current.get(currentIdx)!.push(decrypted);
+      fileChunksMapRef.current.get(currentIdx)!.push(rawData);
     }
 
     // --- Mark chunk as completed for resume ---
@@ -167,8 +156,8 @@ export function useTransferSession() {
       );
     }
 
-    receivedSizeRef.current += decrypted.byteLength;
-    return decrypted.byteLength;
+    receivedSizeRef.current += rawData.byteLength;
+    return rawData.byteLength;
   }, [currentFileIndex]);
 
   const handleRawMessage = useCallback(async (data: string | ArrayBuffer) => {
@@ -224,15 +213,7 @@ export function useTransferSession() {
           }
         }
 
-        // Fetch manifest for verification
-        try {
-          const res = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/session/${message.sessionId}/manifest`);
-          if (res.ok) {
-            manifestRef.current = await res.json();
-          }
-        } catch {
-          console.warn('Failed to fetch manifest');
-        }
+
       } else if (message.type === 'file-start') {
         setCurrentFileIndex(message.index);
         if (writableRef.current && message.index > 0) {
@@ -279,13 +260,8 @@ export function useTransferSession() {
         peerCompletedChunksRef.current = new Set(message.completedChunks || []);
       }
     } else if (data instanceof ArrayBuffer) {
-      if (!sharedKeyRef.current) {
-        pendingEncryptedChunksRef.current.push(data);
-        return;
-      }
-
       try {
-        await processEncryptedChunk(data, sharedKeyRef.current);
+        await processChunk(data);
 
         if (batchMetadata && startTimeRef.current) {
           const totalSize = batchMetadata.files.reduce((acc: number, f: any) => acc + f.size, 0);
@@ -321,9 +297,9 @@ export function useTransferSession() {
         console.error('Decryption failed', e);
       }
     }
-  }, [batchMetadata, updateProgressUi, sessionId, processEncryptedChunk]);
+  }, [batchMetadata, updateProgressUi, sessionId, processChunk]);
 
-  const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, sharedKey, isRelayActive, activateRelay, reconnectP2P, signalingState } = useWebRTC({
+  const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, isRelayActive, activateRelay, reconnectP2P, signalingState } = useWebRTC({
     sessionId: sessionId || '',
     isSender: files.length > 0,
     onDataChannelMessage: handleRawMessage,
@@ -345,27 +321,11 @@ export function useTransferSession() {
 
   useEffect(() => {
     sendDataRef.current = sendData;
-    sharedKeyRef.current = sharedKey;
-    isRelayActiveRef.current = isRelayActive;
     sendSignalingRef.current = sendSignaling;
     waitForBufferRef.current = waitForBuffer;
-  }, [sendData, sharedKey, isRelayActive, sendSignaling, waitForBuffer]);
+  }, [sendData, sendSignaling, waitForBuffer]);
 
-  useEffect(() => {
-    if (sharedKey && pendingEncryptedChunksRef.current.length > 0) {
-      const buffered = [...pendingEncryptedChunksRef.current];
-      pendingEncryptedChunksRef.current = [];
-      (async () => {
-        for (const chunk of buffered) {
-          try { await processEncryptedChunk(chunk, sharedKey); } catch {}
-        }
-        if (batchMetadata && startTimeRef.current) {
-          const totalSize = batchMetadata.files.reduce((acc: number, f: any) => acc + f.size, 0);
-          updateProgressUi(receivedSizeRef.current, totalSize);
-        }
-      })();
-    }
-  }, [sharedKey, processEncryptedChunk, batchMetadata, updateProgressUi]);
+
 
   const handleCancel = useCallback((isInitiator = true) => {
     isCancelledRef.current = true;
@@ -397,6 +357,14 @@ export function useTransferSession() {
     setIsTransferStarted(false);
     window.history.pushState({}, '', window.location.pathname);
   }, [dataChannel, sendData]);
+
+  const togglePause = useCallback(() => {
+    setIsPaused((prev) => {
+      const next = !prev;
+      isPausedRef.current = next;
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     handleCancelRef.current = handleCancel;
@@ -468,21 +436,7 @@ export function useTransferSession() {
         body: JSON.stringify({ sessionId: data.sessionId }),
       }).catch(() => { /* nearby is optional */ });
 
-      (async () => {
-        const manifest: Record<number, string> = {};
-        for (let i = 0; i < selectedFiles.length; i++) {
-          const file = selectedFiles[i];
-          const fileId = await computeFileHash(file);
-          const chunks = getFileChunks(file, fileId);
-          for await (const chunk of chunks) {
-            manifest[chunk.chunk_id] = chunk.hash;
-            if (chunk.chunk_id % 10 === 0) {
-              await fetch(`/api/manifest`, { method: 'POST', body: JSON.stringify({ sessionId: data.sessionId, manifest }) });
-            }
-          }
-        }
-        await fetch(`/api/manifest`, { method: 'POST', body: JSON.stringify({ sessionId: data.sessionId, manifest }) });
-      })();
+      // No manifest construction needed for native DTLS flow
     } catch {
       const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
       setSessionId(sid);
@@ -528,6 +482,11 @@ export function useTransferSession() {
         for await (const chunk of chunks) {
           if (isCancelledRef.current) break;
 
+          while (isPausedRef.current && !isCancelledRef.current) {
+            await new Promise(r => setTimeout(r, 100));
+          }
+          if (isCancelledRef.current) break;
+
           // --- RESUME: skip chunks the peer already has ---
           if (skipChunks.has(chunk.chunk_id)) {
             totalSentRef.current += chunk.size;
@@ -538,20 +497,15 @@ export function useTransferSession() {
           await waitForBufferRef.current();
           if (isCancelledRef.current) break;
 
-          const key = sharedKeyRef.current;
-          if (key) {
-            const { encryptedData, iv } = await encryptChunk(chunk.data, key);
-            const totalBuffer = new Uint8Array(4 + iv.length + encryptedData.byteLength);
-            const view = new DataView(totalBuffer.buffer);
-            view.setUint32(0, chunk.chunk_id);
-            totalBuffer.set(iv, 4);
-            totalBuffer.set(new Uint8Array(encryptedData), 4 + iv.length);
+          const totalBuffer = new Uint8Array(4 + chunk.data.byteLength);
+          const view = new DataView(totalBuffer.buffer);
+          view.setUint32(0, chunk.chunk_id);
+          totalBuffer.set(new Uint8Array(chunk.data), 4);
 
-            const sent = await retrySend(() => send(totalBuffer.buffer));
-            if (sent) {
-              totalSentRef.current += chunk.size;
-              updateProgressUi(totalSentRef.current, totalBatchSize);
-            }
+          const sent = await retrySend(() => send(totalBuffer.buffer));
+          if (sent) {
+            totalSentRef.current += chunk.size;
+            updateProgressUi(totalSentRef.current, totalBatchSize);
           }
         }
         await retrySend(() => send(JSON.stringify({ type: 'file-end', index: i })));
@@ -635,8 +589,8 @@ export function useTransferSession() {
     sessionId, files, batchMetadata, progress, status, joinCode, setJoinCode,
     isTransferStarted, setIsTransferStarted, showFileList, setShowFileList,
     error, setError, eta, showRelayPrompt, setShowRelayPrompt, currentFileIndex,
-    receivedBytes: receivedSizeRef.current, channelState, signalingState, sharedKey,
+    receivedBytes: receivedSizeRef.current, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
-    reconnectP2P, activateRelay
+    reconnectP2P, activateRelay, isPaused, togglePause
   };
 }
