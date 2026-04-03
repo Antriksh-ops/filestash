@@ -1,7 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useWebRTC } from './useWebRTC';
 import { getFileChunks } from '../lib/chunker';
-import { computeFileHash } from '../lib/crypto';
 import { CONFIG } from '../lib/config';
 import { saveTransferState, getTransferState, deleteTransferState, markChunkCompleted, flushPendingSave, type TransferState } from '../lib/db';
 import { registerStreamSW, needsStreamFallback, isStreamReady, createStreamDownload } from '../lib/streamSaver';
@@ -484,13 +483,12 @@ export function useTransferSession() {
     totalSentRef.current = 0;
 
     try {
-      // Use refs throughout so we always call the latest sendData/sharedKey
       const send = (data: string | ArrayBuffer) => sendDataRef.current(data);
 
+      // Control messages use retrySend (rare, small)
       await retrySend(() => send(JSON.stringify({ type: 'batch-metadata', files: filesToSend.map(f => ({ name: f.name, size: f.size })) })));
       const totalBatchSize = filesToSend.reduce((acc, f) => acc + f.size, 0);
 
-      // Build set of chunks the peer already has (for resume)
       const skipChunks = peerCompletedChunksRef.current;
       if (skipChunks.size > 0) {
         console.log(`[RESUME] Skipping ${skipChunks.size} chunks already received by peer`);
@@ -501,7 +499,8 @@ export function useTransferSession() {
         setCurrentFileIndex(i);
         await retrySend(() => send(JSON.stringify({ type: 'file-start', index: i })));
 
-        const fileId = await computeFileHash(filesToSend[i]);
+        // Fast file ID — no need to hash the file content
+        const fileId = `${filesToSend[i].name}-${filesToSend[i].size}-${filesToSend[i].lastModified}`;
         const chunks = getFileChunks(filesToSend[i], fileId);
         for await (const chunk of chunks) {
           if (isCancelledRef.current) break;
@@ -511,26 +510,26 @@ export function useTransferSession() {
           }
           if (isCancelledRef.current) break;
 
-          // --- RESUME: skip chunks the peer already has ---
           if (skipChunks.has(chunk.chunk_id)) {
             totalSentRef.current += chunk.size;
             updateProgressRef(totalSentRef.current, totalBatchSize);
-            continue; // Fast-forward past this chunk
+            continue;
           }
 
+          // Backpressure: only wait when buffer is actually full
           await waitForBufferRef.current();
           if (isCancelledRef.current) break;
 
+          // Build chunk packet: [4-byte chunkId][raw data]
           const totalBuffer = new Uint8Array(4 + chunk.data.byteLength);
-          const view = new DataView(totalBuffer.buffer);
-          view.setUint32(0, chunk.chunk_id);
+          new DataView(totalBuffer.buffer).setUint32(0, chunk.chunk_id);
           totalBuffer.set(new Uint8Array(chunk.data), 4);
 
-          const sent = await retrySend(() => send(totalBuffer.buffer));
-          if (sent) {
-            totalSentRef.current += chunk.size;
-            updateProgressRef(totalSentRef.current, totalBatchSize);
-          }
+          // DIRECT send — no retrySend wrapper. If the channel is open, send() always succeeds.
+          // Backpressure is handled by waitForBuffer above.
+          send(totalBuffer.buffer);
+          totalSentRef.current += chunk.size;
+          updateProgressRef(totalSentRef.current, totalBatchSize);
         }
         await retrySend(() => send(JSON.stringify({ type: 'file-end', index: i })));
       }
