@@ -29,10 +29,10 @@ self.addEventListener('message', (event) => {
       start(controller) {
         port.onmessage = (evt) => {
           if (evt.data === 'end') {
-            try { controller.close(); } catch (e) { /* already closed */ }
+            try { controller.close(); } catch { /* already closed */ }
             streamMap.delete(downloadId);
           } else if (evt.data === 'abort') {
-            try { controller.error('Download aborted'); } catch (e) { /* already errored */ }
+            try { controller.error('Download aborted'); } catch { /* already errored */ }
             streamMap.delete(downloadId);
           } else {
             // evt.data is a Uint8Array chunk

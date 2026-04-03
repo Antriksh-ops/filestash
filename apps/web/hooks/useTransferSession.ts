@@ -357,7 +357,7 @@ export function useTransferSession() {
       pendingEncryptedChunksRef.current = [];
       (async () => {
         for (const chunk of buffered) {
-          try { await processEncryptedChunk(chunk, sharedKey); } catch (e) {}
+          try { await processEncryptedChunk(chunk, sharedKey); } catch {}
         }
         if (batchMetadata && startTimeRef.current) {
           const totalSize = batchMetadata.files.reduce((acc: number, f: any) => acc + f.size, 0);

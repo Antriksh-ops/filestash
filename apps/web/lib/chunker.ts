@@ -1,8 +1,8 @@
 export const CHUNK_SIZES = {
-    SMALL: 60 * 1024,      // 60KB (Guarantees safe passage under 65535 byte SCTP limit)
-    MEDIUM: 60 * 1024,     
-    LARGE: 60 * 1024,      
-    XLARGE: 60 * 1024      
+    SMALL: 250 * 1024,      // 250KB (Most optimal for high-speed local transfer within 256KB limit)
+    MEDIUM: 250 * 1024,     
+    LARGE: 250 * 1024,      
+    XLARGE: 250 * 1024      
 };
 
 import { computeHash } from './crypto';

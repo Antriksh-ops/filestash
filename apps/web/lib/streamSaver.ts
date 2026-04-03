@@ -83,15 +83,13 @@ export function createStreamDownload(filename: string, filesize?: number): Strea
 
   // Small delay then trigger the download by navigating an iframe to the synthetic URL
   const triggerDownload = () => {
-    const iframe = document.createElement('iframe');
-    iframe.hidden = true;
-    iframe.src = `/filedrop-download/${downloadId}`;
-    document.body.appendChild(iframe);
-
-    // Clean up iframe after download starts
+    const a = document.createElement('a');
+    a.href = `/filedrop-download/${downloadId}`;
+    document.body.appendChild(a);
+    a.click();
     setTimeout(() => {
-      try { document.body.removeChild(iframe); } catch { /* already removed */ }
-    }, 10000);
+      try { document.body.removeChild(a); } catch { /* already removed */ }
+    }, 1000);
   };
 
   // Give the SW a moment to register the stream before fetching
