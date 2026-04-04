@@ -580,11 +580,14 @@ export function useTransferSession() {
       setStatus('sending');
       window.history.pushState({}, '', `?s=${data.sessionId}`);
 
-    } catch {
-      const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
-      setSessionId(sid);
-      setStatus('sending');
-      window.history.pushState({}, '', `?s=${sid}`);
+    } catch (err: any) {
+      console.error('[P2P] Failed to establish valid signaling session', err);
+      // Reset state if we fail to get a true backend-backed session ID
+      setSessionId(null);
+      setStatus('idle');
+      setFiles([]);
+      setError("Unable to connect to signaling server. Please try again in 30 seconds.");
+      window.history.pushState({}, '', window.location.pathname);
     }
   }, [sessionId, channelState, startTransfer, status]);
 
