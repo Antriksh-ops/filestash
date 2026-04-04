@@ -92,8 +92,12 @@ export function createStreamDownload(filename: string, filesize?: number): Strea
     }, 1000);
   };
 
-  // Give the SW a moment to register the stream before fetching
-  setTimeout(triggerDownload, 100);
+  // Wait for the SW to register the stream before fetching
+  channel.port1.onmessage = (evt) => {
+    if (evt.data === 'registered') {
+      triggerDownload();
+    }
+  };
 
   return {
     write(chunk: ArrayBuffer) {

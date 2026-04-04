@@ -16,7 +16,8 @@ export default function Home() {
     error, setError, eta, showRelayPrompt, setShowRelayPrompt,
     receivedBytes, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
-    reconnectP2P, activateRelay, isPaused, togglePause, candidateType
+    reconnectP2P, activateRelay, isPaused, togglePause, candidateType,
+    transferStartTime, transferFinishTime
   } = useTransferSession();
 
 
@@ -120,7 +121,8 @@ export default function Home() {
           <div className="w-full max-w-2xl mx-auto py-10">
             <CompletionView
               files={displayFiles}
-              startTime={Date.now()}
+              startTime={transferStartTime}
+              finishTime={transferFinishTime}
               isSender={files.length > 0}
               onDownload={downloadAll}
               onNewTransfer={() => handleCancel(true)}

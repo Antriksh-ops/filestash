@@ -55,6 +55,7 @@ export function useTransferSession() {
   const totalSentRef = useRef(0);
   const receivedSizeRef = useRef(0);
   const startTimeRef = useRef<number | null>(null);
+  const finishTimeRef = useRef<number | null>(null);
   
   // Storage and sliding window pacing refs
   const lastAckSentRef = useRef(0);
@@ -324,6 +325,7 @@ export function useTransferSession() {
             // Check if data was written to a file stream or accumulated in memory
             const wasStreaming = !!writableRef.current || !!streamWriterRef.current;
 
+            finishTimeRef.current = Date.now();
             setStatus('completed');
             progressRef.current = 100;
             etaRef.current = null;
@@ -347,7 +349,7 @@ export function useTransferSession() {
                 if (meta.files.length === 1) {
                   const chunks = fileChunksMapRef.current.get(0);
                   if (chunks && chunks.length > 0) {
-                    const blob = new Blob(chunks);
+                    const blob = new Blob(chunks, { type: 'application/octet-stream' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
@@ -541,6 +543,7 @@ export function useTransferSession() {
     isTransferringRef.current = true;
     await requestWakeLock();
     isCancelledRef.current = false;
+    finishTimeRef.current = null;
     startTimeRef.current = Date.now();
     totalSentRef.current = 0;
 
@@ -578,8 +581,8 @@ export function useTransferSession() {
             continue;
           }
 
-          // Backpressure: SCTP flow control + high-water mark handles throughput pacing
-          // (sliding window removed — it was throttling LAN speeds to ~1MB/s)
+          // Backpressure: Only yield to Promise if we actually exceed the high-water mark
+          // (Calling an async function inside a hot loop causes microtask delays that cap throughput)
           await waitForBufferRef.current();
           if (isCancelledRef.current) break;
 
@@ -588,8 +591,10 @@ export function useTransferSession() {
           new DataView(totalBuffer.buffer).setUint32(0, chunk.chunk_id);
           totalBuffer.set(new Uint8Array(chunk.data), 4);
 
-          // Ensure reliable sending — wait if the SCTP buffer rejects the chunk
-          const sent = await retrySend(() => send(totalBuffer.buffer));
+          // Fast synchronous path (99.9% of chunks). Avoid wrapping in async retry unless needed
+          let sent = send(totalBuffer.buffer);
+          if (!sent) sent = await retrySend(() => send(totalBuffer.buffer));
+          
           if (sent) {
             totalSentRef.current += chunk.size;
             updateProgressRef(totalSentRef.current, totalBatchSize);
@@ -709,7 +714,7 @@ export function useTransferSession() {
     if (batchMetadata.files.length === 1) {
       const chunks = fileChunksMapRef.current.get(0);
       if (!chunks || chunks.length === 0) return;
-      const blob = new Blob(chunks);
+      const blob = new Blob(chunks, { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -776,6 +781,8 @@ export function useTransferSession() {
     error, setError, eta, showRelayPrompt, setShowRelayPrompt, currentFileIndex,
     receivedBytes: receivedSizeRef.current, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
-    reconnectP2P, activateRelay, isPaused, togglePause, candidateType
+    reconnectP2P, activateRelay, isPaused, togglePause, candidateType,
+    transferStartTime: startTimeRef.current,
+    transferFinishTime: finishTimeRef.current
   };
 }

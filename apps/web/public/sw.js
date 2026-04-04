@@ -47,6 +47,7 @@ self.addEventListener('message', (event) => {
     });
 
     streamMap.set(downloadId, { stream, filename, filesize });
+    port.postMessage('registered');
   }
 });
 

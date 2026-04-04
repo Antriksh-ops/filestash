@@ -10,14 +10,15 @@ interface FileInfo {
 interface CompletionViewProps {
     files: File[] | FileInfo[];
     startTime: number | null;
+    finishTime?: number | null;
     isSender: boolean;
     onDownload: () => void;
     onNewTransfer: () => void;
 }
 
-export default function CompletionView({ files, startTime, isSender, onDownload, onNewTransfer }: CompletionViewProps) {
+export default function CompletionView({ files, startTime, finishTime, isSender, onDownload, onNewTransfer }: CompletionViewProps) {
     const totalSize = files.reduce((a, b) => a + b.size, 0);
-    const duration = startTime ? Math.round((Date.now() - startTime) / 1000) : 0;
+    const duration = startTime ? Math.round(((finishTime || Date.now()) - startTime) / 1000) : 0;
 
     return (
         <div className="space-y-6 pt-6 border-t-4 border-(--border)">
