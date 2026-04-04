@@ -1,15 +1,18 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import DropZone from '../components/DropZone';
 import RelayPromptModal from '../components/RelayPromptModal';
 import TransferProgress from '../components/TransferProgress';
 import CompletionView from '../components/CompletionView';
 import ConnectionBadge from '../components/ConnectionBadge';
 import QRScanner from '../components/QRScanner';
+import NearbyModal from '../components/NearbyModal';
 import { useTransferSession } from '../hooks/useTransferSession';
 
 export default function Home() {
+  const [showNearbyModal, setShowNearbyModal] = useState(false);
   const {
     sessionId, files, batchMetadata, progress, status, joinCode, setJoinCode,
     error, setError, eta, showRelayPrompt, setShowRelayPrompt,
@@ -115,7 +118,7 @@ export default function Home() {
               </form>
 
               <button
-                onClick={() => window.location.href = '/nearby'}
+                onClick={() => setShowNearbyModal(true)}
                 className="flex-1 py-4 bg-(--surface) text-(--text) font-black uppercase text-sm border-4 border-(--border) rounded-2xl shadow-[4px_4px_0px_0px_var(--shadow)] hover:bg-(--card-hover) active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all flex items-center justify-center gap-3"
               >
                 <div className="w-3 h-3 rounded-full bg-(--accent-emerald) animate-pulse" />
@@ -173,12 +176,14 @@ export default function Home() {
                   <div className="flex items-start gap-3">
                     <div className="bg-white p-2 rounded-xl border-2 border-(--border) shrink-0">
                       <div className="w-[100px] h-[100px]">
-                        {typeof window !== 'undefined' && (
-                          <img 
-                            src={`https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(shareLink)}`}
-                            alt="QR Code"
-                            width={100}
-                            height={100}
+                        {typeof window !== 'undefined' && shareLink && (
+                          <QRCodeSVG
+                            value={shareLink}
+                            size={100}
+                            level="M"
+                            includeMargin={false}
+                            bgColor="#FFFFFF"
+                            fgColor="#000000"
                           />
                         )}
                       </div>
@@ -282,6 +287,15 @@ export default function Home() {
           <p className="text-black font-bold text-xs uppercase opacity-70">Direct P2P core. The fastest way to move data locally or globally.</p>
         </div>
       </div>
+      )}
+
+      {/* Modals and Overlays */}
+      {showNearbyModal && (
+        <NearbyModal 
+          onClose={() => setShowNearbyModal(false)}
+          currentSessionId={sessionId}
+          onEnsureSession={() => handleFileSelect([])}
+        />
       )}
     </main>
   );
