@@ -21,7 +21,8 @@ const RTC_CONFIG_BASE: Omit<RTCConfiguration, 'iceServers'> = {
 export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnectionStateChange, onMessage, onStalled, onComplete }: WebRTCOptions) {
     const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
     const [dataChannel, setDataChannel] = useState<RTCDataChannel | null>(null);
-    const [channelState, setChannelState] = useState<RTCDataChannelState>('connecting');
+    // Fix #12: Default to 'closed' — no session exists yet at mount time
+    const [channelState, setChannelState] = useState<RTCDataChannelState>('closed');
     const [isRelayActive, setIsRelayActive] = useState(false);
     const [signalingState, setSignalingState] = useState<number>(WebSocket.CLOSED);
 
@@ -158,7 +159,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const signalingQueueRef = useRef<Array<any>>([]);
     const isProcessingSignalingRef = useRef(false);
 
-    const processSignalingMessage = useCallback(async (message: { type?: string; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[]; action?: string }) => {
+    // Fix #7: Explicit return type — false means "not ready, keep in queue", true means "processed"
+    const processSignalingMessage = useCallback(async (message: { type?: string; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[]; action?: string }): Promise<boolean> => {
         if (!pcRef.current) {
             console.warn('[SIGNALLING] PeerConnection not ready, buffering message...');
             return false;
@@ -171,7 +173,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             setIsRelayActive(true);
             setChannelState('open');
             if (relayTimeoutRef.current) clearTimeout(relayTimeoutRef.current);
-            return;
+            return true;
         }
 
 
@@ -191,7 +193,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             // GUARD: if we already have a stable connection, ignore duplicate offers
             if (pcRef.current.connectionState === 'connected' && dataChannelRef.current?.readyState === 'open') {
                 console.log('[P2P] Ignoring offer — already connected with open data channel');
-                return;
+                return true;
             }
             console.log('Received WebRTC Offer, creating Answer...');
             await pcRef.current.setRemoteDescription(new RTCSessionDescription(message.offer));
@@ -225,6 +227,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         } else {
             messageRef.current?.(message);
         }
+        return true;
     }, [createOffer, sendSignaling]);
 
     // Queued handler: serializes signaling messages to prevent race conditions
@@ -257,25 +260,22 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     }, [handleSignalingMessage]);
 
     // ===== MAIN INIT EFFECT =====
+    // Fix #2: WebSocket reconnection with exponential backoff
     // Only depends on sessionId — all other callbacks are accessed via refs
     useEffect(() => {
         if (!sessionId || sessionId === '') return;
 
         let destroyed = false;
+        let wsReconnectTimer: NodeJS.Timeout | null = null;
+        let wsReconnectAttempt = 0;
+        const MAX_WS_RECONNECTS = 8;
 
-        const init = async () => {
-            // Check for Secure Context / WebCrypto API
-            if (!window.isSecureContext || !window.crypto || !window.crypto.subtle) {
-                console.error('[SECURITY] Web Crypto API is not available (likely missing Secure Context).');
-                connectionStateHandlerRef.current?.('failed');
-                return; // Stop initialization
-            }
+        // Extracted WebSocket setup — can be called again on reconnect
+        const connectWebSocket = () => {
+            if (destroyed) return;
 
-
-
-            // 2. Setup WebSocket
             const signalingUrl = CONFIG.SIGNALING_URL;
-            console.log('DEBUG: Initializing WebRTC with signaling URL:', signalingUrl);
+            console.log(`[SIGNALLING] ${wsReconnectAttempt > 0 ? 'Reconnecting' : 'Connecting'} WebSocket to:`, signalingUrl);
             const socket = new WebSocket(`${signalingUrl}?sessionId=${sessionId}`);
             socket.binaryType = 'arraybuffer';
             socketRef.current = socket;
@@ -284,6 +284,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             socket.onopen = () => {
                 if (destroyed) return;
                 console.log('[SIGNALLING] WebSocket Connected');
+                wsReconnectAttempt = 0; // Reset backoff on success
                 setSignalingState(WebSocket.OPEN);
                 while (queueRef.current.length > 0) {
                     socket.send(queueRef.current.shift()!);
@@ -297,7 +298,24 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
             socket.onclose = (e) => {
                 console.warn('[SIGNALLING] WebSocket Closed:', e.code, e.reason);
-                if (!destroyed) setSignalingState(WebSocket.CLOSED);
+                if (destroyed) return;
+                setSignalingState(WebSocket.CLOSED);
+
+                // Don't reconnect if server explicitly rejected (1008 = policy violation)
+                if (e.code === 1008) {
+                    console.warn('[SIGNALLING] Server rejected connection — not reconnecting.');
+                    return;
+                }
+
+                // Auto-reconnect with exponential backoff
+                if (wsReconnectAttempt < MAX_WS_RECONNECTS) {
+                    const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempt), 30000);
+                    console.log(`[SIGNALLING] Reconnecting in ${delay}ms (attempt ${wsReconnectAttempt + 1}/${MAX_WS_RECONNECTS})...`);
+                    wsReconnectAttempt++;
+                    wsReconnectTimer = setTimeout(connectWebSocket, delay);
+                } else {
+                    console.error('[SIGNALLING] Max reconnection attempts reached. Signaling channel is dead.');
+                }
             };
 
             socket.onmessage = (event) => {
@@ -311,8 +329,20 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                     messageHandlerRef.current?.(event.data);
                 }
             };
+        };
 
-            // 3. Setup RTCPeerConnection
+        const init = async () => {
+            // Check for Secure Context / WebCrypto API
+            if (!window.isSecureContext || !window.crypto || !window.crypto.subtle) {
+                console.error('[SECURITY] Web Crypto API is not available (likely missing Secure Context).');
+                connectionStateHandlerRef.current?.('failed');
+                return; // Stop initialization
+            }
+
+            // 1. Setup WebSocket (with auto-reconnection on close)
+            connectWebSocket();
+
+            // 2. Setup RTCPeerConnection
             const iceServers = await getIceServers();
             console.log(`[P2P] Fetched ${iceServers.length} ICE servers securely`);
 
@@ -375,6 +405,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 // Don't create offer yet — wait for peer_joined signal
                 // This prevents creating duplicate data channels
                 console.log('[P2P] Sender ready, waiting for peer to join...');
+            } else {
                 pc.ondatachannel = (event) => {
                     setupDataChannel(event.channel);
                 };
@@ -388,6 +419,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
         return () => {
             destroyed = true;
+            if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
             if (pcRef.current) pcRef.current.close();
             if (socketRef.current) socketRef.current.close();
             // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -448,8 +480,17 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         return false;
     }, [dataChannel, isRelayActive]);
 
+    // Fix #4: Protect active transfers — only allow reconnect when data channel is NOT open
     const reconnectP2P = useCallback(() => {
         console.log('[P2P] Manual Re-Handshake requested...');
+
+        // Guard: do NOT disrupt an active data channel (protects in-progress transfers)
+        const existing = dataChannelRef.current;
+        if (existing && existing.readyState === 'open') {
+            console.warn('[P2P] Data channel is still open — aborting reconnect to protect active transfer');
+            return;
+        }
+
         // Attempt ICE restart first (works for both roles)
         if (pcRef.current) {
             try {

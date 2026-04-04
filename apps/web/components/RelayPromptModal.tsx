@@ -21,7 +21,7 @@ export default function RelayPromptModal({ onRetry, onRelay, onDismiss }: RelayP
                         <p>Direct device-to-device connection is failing. This often happens due to restrictive corporate firewalls or complex mobile networks.</p>
                         <div className="bg-(--input-bg) border-2 border-(--border) p-4 rounded-xl space-y-2">
                             <p className="text-(--text)">What is Relay Mode?</p>
-                            <p>Data will pass through our secure signaling server as a fallback. Your files remain <span className="text-(--accent-emerald)">End-to-End Encrypted</span>, but transfer may be slower and subject to bandwidth limits (1GB).</p>
+                            <p>Data will pass through our signaling server as a fallback. Transfer may be slower and is subject to bandwidth limits (1GB). <span className="text-(--accent-yellow)">Note: Relay mode is NOT end-to-end encrypted</span> — for maximum privacy, retry direct P2P.</p>
                         </div>
                     </div>
                 </div>

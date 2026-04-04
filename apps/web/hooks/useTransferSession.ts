@@ -48,6 +48,8 @@ export function useTransferSession() {
   const [showRelayPrompt, setShowRelayPrompt] = useState(false);
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
+  // Fix #1: Explicit role — set once at session creation, never re-derived
+  const [role, setRole] = useState<'sender' | 'receiver' | null>(null);
 
   const wakeLockRef = useRef<WakeLockSentinel | null>(null);
   const totalSentRef = useRef(0);
@@ -273,10 +275,9 @@ export function useTransferSession() {
         peerCompletedChunksRef.current = new Set(message.completedChunks || []);
       } else if (message.type === 'ack') {
         // SENDER receives this: receiver pacing acknowledgment
+        // Fix #5: Only update pacing ref — do NOT overwrite sender's local progress
+        // (sender uses totalSentRef for its own progress bar)
         peerAckSizeRef.current = message.receivedSize;
-        if (totalSizeRef.current > 0) {
-          updateProgressRef(message.receivedSize, totalSizeRef.current);
-        }
       }
     } else if (data instanceof ArrayBuffer) {
       try {
@@ -327,7 +328,8 @@ export function useTransferSession() {
 
   const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, isRelayActive, activateRelay, reconnectP2P, signalingState } = useWebRTC({
     sessionId: sessionId || '',
-    isSender: status === 'sending' || files.length > 0,
+    // Fix #1: Use explicit role instead of deriving from reactive state
+    isSender: role === 'sender',
     onDataChannelMessage: handleRawMessage,
     onMessage: (msg: any) => {
       if (msg && typeof msg === 'object' && 'type' in msg && msg.type === 'force-relay') return;
@@ -380,6 +382,7 @@ export function useTransferSession() {
     setEta(null);
     setStatus('idle');
     setSessionId(null);
+    setRole(null);
     setError(null);
     setIsTransferStarted(false);
     window.history.pushState({}, '', window.location.pathname);
@@ -408,6 +411,7 @@ export function useTransferSession() {
           const savedState = await getTransferState(sid);
           if (savedState && savedState.status === 'active' && savedState.completedChunks?.length > 0) {
             console.log(`[RESUME] Found saved state for ${sid}: ${savedState.completedChunks.filter(Boolean).length} chunks completed`);
+            setRole('receiver');
             setSessionId(sid);
             setBatchMetadata({ files: savedState.files, sessionId: sid });
             batchMetadataRef.current = { files: savedState.files, sessionId: sid };
@@ -416,6 +420,7 @@ export function useTransferSession() {
             transferStateRef.current = savedState;
             setStatus('receiving');
           } else if (files.length === 0) {
+            setRole('receiver');
             setSessionId(sid);
             setStatus('receiving');
           }
@@ -518,13 +523,18 @@ export function useTransferSession() {
       }
 
       if (!isCancelledRef.current && totalSentRef.current >= totalBatchSize) {
+        // Fix #11: Wait for data channel buffer to drain before declaring complete
+        // This ensures the last chunks are actually sent before we show "completed"
+        await waitForBufferRef.current();
+        send(JSON.stringify({ type: 'transfer-complete' }));
+        // Small grace period to ensure the control message is flushed
+        await new Promise(r => setTimeout(r, 200));
         setStatus('completed');
         progressRef.current = 100;
         etaRef.current = null;
         setEta(null);
         setProgress(100);
         releaseWakeLock();
-        send(JSON.stringify({ type: 'transfer-complete' }));
       }
     } finally {
       isTransferringRef.current = false;
@@ -536,7 +546,8 @@ export function useTransferSession() {
 
     // If there's an existing session but the connection is dead, reset fully first
     if (sessionId && channelState !== 'open') {
-      // Connection was lost — clean up stale state before starting fresh
+      // Fix #6: Clean up stale state and wait for React to flush
+      // so useWebRTC's cleanup runs before we create a new session
       isTransferringRef.current = false;
       setFiles([]);
       setBatchMetadata(null);
@@ -553,9 +564,12 @@ export function useTransferSession() {
       startTimeRef.current = null;
       setEta(null);
       setSessionId(null);
+      setRole(null);
       setIsTransferStarted(false);
       setError(null);
       window.history.pushState({}, '', window.location.pathname);
+      // Wait a tick so useWebRTC cleanup effect fires before we create new session
+      await new Promise(r => setTimeout(r, 0));
       // Fall through to create a brand new session below
     }
 
@@ -578,6 +592,7 @@ export function useTransferSession() {
       if (!response.ok || !data.sessionId) {
         throw new Error(data.error || "Signaling server is waking up. Please try again in 30 seconds.");
       }
+      setRole('sender');
       setSessionId(data.sessionId);
       setStatus('sending');
       window.history.pushState({}, '', `?s=${data.sessionId}`);
@@ -657,6 +672,7 @@ export function useTransferSession() {
         if (res.ok) {
           const data = await res.json();
           if (data.sessionId) {
+            setRole('receiver');
             setSessionId(data.sessionId);
             setStatus('receiving');
             window.history.pushState({}, '', `?s=${data.sessionId}`);
@@ -667,6 +683,7 @@ export function useTransferSession() {
       setError('Invalid or expired 4-digit code');
     } else if (joinCode.length === 6) {
       const code = joinCode.trim().toUpperCase();
+      setRole('receiver');
       setSessionId(code);
       setStatus('receiving');
       window.history.pushState({}, '', `?s=${code}`);

@@ -29,6 +29,7 @@ export default function TransferProgress({
 }: TransferProgressProps) {
     const statusLabel = React.useMemo(() => {
         if (status === 'completed') return 'SUCCESS';
+        if (signalingState === 3 || signalingState === 2) return 'OFFLINE'; // WebSocket.CLOSED or CLOSING
         if (channelState === 'open') {
             if (status === 'sending') return 'SENDING';
             return receivedBytes > 0 ? 'RECEIVING' : 'WAITING FOR SENDER';
@@ -36,7 +37,7 @@ export default function TransferProgress({
         if (status === 'sending') {
             return signalingState === WebSocket.OPEN ? 'WAITING FOR PEER' : 'INITIALIZING...';
         }
-        return 'CONNECTING...';
+        return signalingState === WebSocket.OPEN ? 'CONNECTING...' : 'SIGNALING LOST';
     }, [status, channelState, receivedBytes, signalingState]);
 
     return (

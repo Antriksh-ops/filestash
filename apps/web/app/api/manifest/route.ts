@@ -1,5 +1,18 @@
 import { NextResponse } from 'next/server';
-import { CONFIG } from '@/lib/config';
+
+/**
+ * Issue #8 fix: Use env vars directly for server-side signaling URL
+ * instead of importing the client-side CONFIG (which resolves to localhost
+ * on Vercel because window is undefined server-side).
+ */
+function getServerSignalingUrl(): string {
+    const envUrl = process.env.NEXT_PUBLIC_SIGNALING_URL;
+    if (envUrl && !envUrl.includes('SIGNALLING_SERVER_HOST')) {
+        return envUrl.replace('ws://', 'http://').replace('wss://', 'https://');
+    }
+    // Production fallback — same as the client-side config.ts fallback
+    return 'https://filestash-z8go.onrender.com';
+}
 
 export async function POST(request: Request) {
     try {
@@ -10,7 +23,7 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'Missing sessionId or manifest' }, { status: 400 });
         }
 
-        const signalingUrl = CONFIG.SIGNALING_URL_HTTP;
+        const signalingUrl = getServerSignalingUrl();
 
         const response = await fetch(`${signalingUrl}/session/${sessionId}/manifest`, {
             method: 'PUT',

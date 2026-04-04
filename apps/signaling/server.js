@@ -219,6 +219,17 @@ const server = createServer(async (req, res) => {
         return;
     }
 
+    // Health check endpoint for Render / uptime monitors
+    if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            status: 'ok',
+            uptime: Math.floor(process.uptime()),
+            activeSessions: sessionPeers.size
+        }));
+        return;
+    }
+
     res.writeHead(404);
     res.end();
 });
