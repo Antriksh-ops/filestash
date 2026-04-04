@@ -574,8 +574,10 @@ export function useTransferSession() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ files: selectedFiles.map(f => ({ name: f.name, size: f.size })) })
       });
-      const data = await response.json();
-      if (!response.ok || !data.sessionId) throw new Error("No session ID returned");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.sessionId) {
+        throw new Error(data.error || "Signaling server is waking up. Please try again in 30 seconds.");
+      }
       setSessionId(data.sessionId);
       setStatus('sending');
       window.history.pushState({}, '', `?s=${data.sessionId}`);
@@ -586,7 +588,7 @@ export function useTransferSession() {
       setSessionId(null);
       setStatus('idle');
       setFiles([]);
-      setError("Unable to connect to signaling server. Please try again in 30 seconds.");
+      setError(err?.message || "Unable to connect to signaling server.");
       window.history.pushState({}, '', window.location.pathname);
     }
   }, [sessionId, channelState, startTransfer, status]);

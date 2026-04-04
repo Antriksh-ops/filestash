@@ -8,7 +8,7 @@ const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 
 // Anti-abuse: Limits
 const MAX_RELAY_BYTES_PER_SESSION = 1024 * 1024 * 1024; // 1GB Hard Cap
-const MAX_SESSIONS_PER_IP_WINDOW = 5; // Sessions per hour
+const MAX_SESSIONS_PER_IP_WINDOW = 500; // Sessions per hour
 const RATE_LIMIT_WINDOW = 60 * 60 * 1000; // 1 Hour
 
 const ipSessionTracker = new Map(); // ip -> { count, startTime }
