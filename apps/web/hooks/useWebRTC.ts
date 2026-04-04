@@ -97,8 +97,11 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         dataChannelRef.current = dc;
 
         dc.binaryType = 'arraybuffer';
-        // High threshold: resume sending when buffer drains to 2MB (keeps pipe full for LAN speeds)
-        dc.bufferedAmountLowThreshold = 2 * 1024 * 1024;
+        // Detect Safari vs Chromium/Firefox to dynamically scale performance buffers without breaking iOS
+        const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+        
+        // High threshold: Safari strict limits vs Chrome gigabit capacity 
+        dc.bufferedAmountLowThreshold = isSafari ? (256 * 1024) : (2 * 1024 * 1024);
 
         dc.onopen = () => {
             // Only update state if this is still the active channel
@@ -488,9 +491,10 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 checkWSBuffer();
             });
         }
-        // High-water mark: keep sending until 8MB buffered, then wait for drain to 2MB
-        // This keeps the SCTP pipe full for maximum throughput on LAN
-        const HIGH_WATER = 8 * 1024 * 1024;
+        // Safari strict vs Chromium/Firefox Gigabit throughput sizes
+        const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+        const HIGH_WATER = isSafari ? (1024 * 1024) : (8 * 1024 * 1024);
+        
         return new Promise<void>((resolve) => {
             if (!dataChannel || dataChannel.bufferedAmount <= HIGH_WATER) {
                 resolve();

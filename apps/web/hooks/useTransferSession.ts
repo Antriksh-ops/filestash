@@ -59,10 +59,14 @@ export function useTransferSession() {
   // Storage and sliding window pacing refs
   const lastAckSentRef = useRef(0);
   const peerAckSizeRef = useRef(0);
-  // Progress refs — transfer loop writes here (zero cost), timer reads to update React state
   const progressRef = useRef(0);
   const etaRef = useRef<string | null>(null);
   const totalSizeRef = useRef(0);
+  
+  // Real-time speed calculation refs
+  const lastSpeedUpdateRef = useRef(0);
+  const lastSpeedBytesRef = useRef(0);
+  const currentSpeedRef = useRef(0);
 
   const sendDataRef = useRef<(data: string | ArrayBuffer) => boolean>(() => false);
   const isTransferringRef = useRef(false);
@@ -113,19 +117,43 @@ export function useTransferSession() {
     totalSizeRef.current = total;
     progressRef.current = total > 0 ? (current / total) * 100 : 0;
 
-    if (startTimeRef.current) {
-      const elapsed = (Date.now() - startTimeRef.current) / 1000;
-      if (elapsed > 0) {
-        const speed = current / elapsed;
+    const now = Date.now();
+    // Initialize speed tracking
+    if (!lastSpeedUpdateRef.current) {
+      lastSpeedUpdateRef.current = now;
+      lastSpeedBytesRef.current = current;
+      return;
+    }
+
+    const elapsedMs = now - lastSpeedUpdateRef.current;
+    
+    // Update speed estimate every 500ms
+    if (elapsedMs >= 500) {
+      const bytesSinceLast = Math.max(0, current - lastSpeedBytesRef.current);
+      const instantSpeed = bytesSinceLast / (elapsedMs / 1000);
+      
+      // Smooth the speed reading slightly (70% new, 30% old)
+      const smoothedSpeed = currentSpeedRef.current === 0 ? 
+          instantSpeed : 
+          (instantSpeed * 0.7) + (currentSpeedRef.current * 0.3);
+          
+      currentSpeedRef.current = smoothedSpeed;
+      lastSpeedUpdateRef.current = now;
+      lastSpeedBytesRef.current = current;
+
+      if (smoothedSpeed > 0) {
         const remaining = total - current;
-        const timeRemaining = remaining / speed;
+        const timeRemaining = remaining / smoothedSpeed;
 
         if (timeRemaining >= 0 && isFinite(timeRemaining)) {
           const mins = Math.floor(timeRemaining / 60);
           const secs = Math.floor(timeRemaining % 60);
-          const speedMB = (speed / (1024 * 1024)).toFixed(2);
+          const speedMB = (smoothedSpeed / (1024 * 1024)).toFixed(2);
           etaRef.current = `${mins > 0 ? `${mins}m ` : ''}${secs}s • ${speedMB} MB/s`;
         }
+      } else {
+        // Stalled
+        etaRef.current = `Stalled • 0.00 MB/s`;
       }
     }
   }, []);
@@ -426,6 +454,9 @@ export function useTransferSession() {
     receivedSizeRef.current = 0;
     setProgress(0);
     startTimeRef.current = null;
+    lastSpeedUpdateRef.current = 0;
+    lastSpeedBytesRef.current = 0;
+    currentSpeedRef.current = 0;
     setEta(null);
     setStatus('idle');
     setSessionId(null);
@@ -557,10 +588,16 @@ export function useTransferSession() {
           new DataView(totalBuffer.buffer).setUint32(0, chunk.chunk_id);
           totalBuffer.set(new Uint8Array(chunk.data), 4);
 
-          // DIRECT send — no retrySend wrapper
-          send(totalBuffer.buffer);
-          totalSentRef.current += chunk.size;
-          updateProgressRef(totalSentRef.current, totalBatchSize);
+          // Ensure reliable sending — wait if the SCTP buffer rejects the chunk
+          const sent = await retrySend(() => send(totalBuffer.buffer));
+          if (sent) {
+            totalSentRef.current += chunk.size;
+            updateProgressRef(totalSentRef.current, totalBatchSize);
+          } else {
+             // Hard failure — peer disconnected or fatal error
+             isCancelledRef.current = true;
+             throw new Error('Failed to send chunk after max retries. Connection lost.');
+          }
         }
         await retrySend(() => send(JSON.stringify({ type: 'file-end', index: i })));
       }
