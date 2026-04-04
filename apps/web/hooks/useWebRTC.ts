@@ -99,9 +99,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         dc.binaryType = 'arraybuffer';
         // Detect Safari vs Chromium/Firefox to dynamically scale performance buffers without breaking iOS
         const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-        
-        // High threshold: Safari strict limits vs Chrome gigabit capacity 
-        dc.bufferedAmountLowThreshold = isSafari ? (256 * 1024) : (2 * 1024 * 1024);
+        // Keep WebRTC queues lean to maximize SCTP window throughput
+        dc.bufferedAmountLowThreshold = 512 * 1024; // Wake up loop when buffer drops below 512KB
 
         dc.onopen = () => {
             // Only update state if this is still the active channel
@@ -491,9 +490,9 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 checkWSBuffer();
             });
         }
-        // Safari strict vs Chromium/Firefox Gigabit throughput sizes
-        const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-        const HIGH_WATER = isSafari ? (1024 * 1024) : (8 * 1024 * 1024);
+        // Keeping the buffer small (1MB) ensures we don't overwhelm the browser's SCTP stack,
+        // which drastically improves actual throughput by avoiding congestion collapse.
+        const HIGH_WATER = 1024 * 1024;
         
         return new Promise<void>((resolve) => {
             if (!dataChannel || dataChannel.bufferedAmount <= HIGH_WATER) {
