@@ -8,17 +8,15 @@ import TransferProgress from '../components/TransferProgress';
 import CompletionView from '../components/CompletionView';
 import ConnectionBadge from '../components/ConnectionBadge';
 import QRScanner from '../components/QRScanner';
-import NearbyModal from '../components/NearbyModal';
 import { useTransferSession } from '../hooks/useTransferSession';
 
 export default function Home() {
-  const [showNearbyModal, setShowNearbyModal] = useState(false);
   const {
     sessionId, files, batchMetadata, progress, status, joinCode, setJoinCode,
     error, setError, eta, showRelayPrompt, setShowRelayPrompt,
     receivedBytes, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
-    reconnectP2P, activateRelay, isPaused, togglePause, generateEmptySession
+    reconnectP2P, activateRelay, isPaused, togglePause
   } = useTransferSession();
 
 
@@ -101,7 +99,7 @@ export default function Home() {
 
             {/* 2. Secondary Actions (Join or Nearby) */}
             <div className="w-full flex flex-col md:flex-row items-stretch gap-4">
-              <form onSubmit={handleJoinByCode} className="flex-1 relative">
+              <form onSubmit={handleJoinByCode} className="w-full relative">
                 <input
                   type="text"
                   maxLength={6}
@@ -116,14 +114,6 @@ export default function Home() {
                   </button>
                 )}
               </form>
-
-              <button
-                onClick={() => setShowNearbyModal(true)}
-                className="flex-1 py-4 bg-(--surface) text-(--text) font-black uppercase text-sm border-4 border-(--border) rounded-2xl shadow-[4px_4px_0px_0px_var(--shadow)] hover:bg-(--card-hover) active:translate-x-0.5 active:translate-y-0.5 active:shadow-none transition-all flex items-center justify-center gap-3"
-              >
-                <div className="w-3 h-3 rounded-full bg-(--accent-emerald) animate-pulse" />
-                Nearby Sharing
-              </button>
             </div>
           </div>
         ) : status === 'completed' ? (
@@ -210,14 +200,7 @@ export default function Home() {
                 </>
               )}
 
-              {/* Nearby devices option */}
-              <button
-                onClick={() => setShowNearbyModal(true)}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-(--input-bg) border-2 border-(--border) hover:bg-(--card-hover) transition-all text-left"
-              >
-                <div className="w-2.5 h-2.5 rounded-full bg-(--accent-emerald) animate-pulse shrink-0" />
-                <span className="text-(--text) font-bold text-[10px] uppercase">Share with nearby devices</span>
-              </button>
+
 
               {/* Cancel Button */}
               <button
@@ -289,14 +272,6 @@ export default function Home() {
       </div>
       )}
 
-      {/* Modals and Overlays */}
-      {showNearbyModal && (
-        <NearbyModal 
-          onClose={() => setShowNearbyModal(false)}
-          currentSessionId={sessionId}
-          onEnsureSession={() => generateEmptySession()}
-        />
-      )}
     </main>
   );
 }

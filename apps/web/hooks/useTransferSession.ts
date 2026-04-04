@@ -575,16 +575,10 @@ export function useTransferSession() {
         body: JSON.stringify({ files: selectedFiles.map(f => ({ name: f.name, size: f.size })) })
       });
       const data = await response.json();
+      if (!response.ok || !data.sessionId) throw new Error("No session ID returned");
       setSessionId(data.sessionId);
       setStatus('sending');
       window.history.pushState({}, '', `?s=${data.sessionId}`);
-
-      // Register with nearby discovery (fire-and-forget)
-      fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: data.sessionId }),
-      }).catch(() => { /* nearby is optional */ });
 
     } catch {
       const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -594,30 +588,7 @@ export function useTransferSession() {
     }
   }, [sessionId, channelState, startTransfer, status]);
 
-  // Generate empty session for Nearby Modal without triggering UI changes
-  const generateEmptySession = useCallback(async () => {
-    if (sessionId) return;
-    try {
-      const response = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/session/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: [] })
-      });
-      const data = await response.json();
-      setSessionId(data.sessionId);
-      window.history.pushState({}, '', `?s=${data.sessionId}`);
 
-      fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: data.sessionId }),
-      }).catch(() => {});
-    } catch {
-      const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
-      setSessionId(sid);
-      window.history.pushState({}, '', `?s=${sid}`);
-    }
-  }, [sessionId]);
 
   // Trigger transfer — uses a ref for files to keep deps stable
   const filesRef = useRef(files);
@@ -702,6 +673,6 @@ export function useTransferSession() {
     error, setError, eta, showRelayPrompt, setShowRelayPrompt, currentFileIndex,
     receivedBytes: receivedSizeRef.current, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
-    reconnectP2P, activateRelay, isPaused, togglePause, generateEmptySession
+    reconnectP2P, activateRelay, isPaused, togglePause
   };
 }
