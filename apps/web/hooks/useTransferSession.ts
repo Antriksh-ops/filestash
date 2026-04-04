@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useWebRTC } from './useWebRTC';
-import { getFileChunks } from '../lib/chunker';
+import { readChunkBatch, CHUNK_SIZE } from '../lib/chunker';
 import { CONFIG } from '../lib/config';
 import { saveTransferState, getTransferState, deleteTransferState, markChunkCompleted, flushPendingSave, type TransferState } from '../lib/db';
 import { registerStreamSW, needsStreamFallback, isStreamReady, createStreamDownload } from '../lib/streamSaver';
@@ -230,7 +230,7 @@ export function useTransferSession() {
         // Initialize transfer state for resume tracking
         const totalSize = message.files.reduce((a: number, f: { size: number }) => a + f.size, 0);
         // Estimate total chunks (we'll refine as we receive)
-        const estChunks = Math.ceil(totalSize / (250 * 1024)); // 250KB chunks
+        const estChunks = Math.ceil(totalSize / CHUNK_SIZE);
         transferStateRef.current = {
           sessionId: sessionId || '',
           files: message.files,
@@ -564,10 +564,13 @@ export function useTransferSession() {
         setCurrentFileIndex(i);
         await retrySend(() => send(JSON.stringify({ type: 'file-start', index: i })));
 
-        // Fast file ID — no need to hash the file content
-        const fileId = `${filesToSend[i].name}-${filesToSend[i].size}-${filesToSend[i].lastModified}`;
-        const chunks = getFileChunks(filesToSend[i], fileId);
-        for await (const chunk of chunks) {
+        const file = filesToSend[i];
+        const fileId = `${file.name}-${file.size}-${file.lastModified}`;
+        let offset = 0;
+        let chunkId = 0;
+
+        // Batch-pump loop: read 2MB from disk, then fire all chunks synchronously
+        while (offset < file.size) {
           if (isCancelledRef.current) break;
 
           while (isPausedRef.current && !isCancelledRef.current) {
@@ -575,34 +578,43 @@ export function useTransferSession() {
           }
           if (isCancelledRef.current) break;
 
-          if (skipChunks.has(chunk.chunk_id)) {
-            totalSentRef.current += chunk.size;
-            updateProgressRef(totalSentRef.current, totalBatchSize);
-            continue;
-          }
-
-          // Backpressure: Only yield to Promise if we actually exceed the high-water mark
-          // (Calling an async function inside a hot loop causes microtask delays that cap throughput)
-          await waitForBufferRef.current();
-          if (isCancelledRef.current) break;
-
-          // Build chunk packet: [4-byte chunkId][raw data]
-          const totalBuffer = new Uint8Array(4 + chunk.data.byteLength);
-          new DataView(totalBuffer.buffer).setUint32(0, chunk.chunk_id);
-          totalBuffer.set(new Uint8Array(chunk.data), 4);
-
-          // Fast synchronous path (99.9% of chunks). Avoid wrapping in async retry unless needed
-          let sent = send(totalBuffer.buffer);
-          if (!sent) sent = await retrySend(() => send(totalBuffer.buffer));
+          // Single await: read up to 2MB from disk at once
+          const batch = await readChunkBatch(file, fileId, offset, chunkId, 2 * 1024 * 1024);
           
-          if (sent) {
-            totalSentRef.current += chunk.size;
-            updateProgressRef(totalSentRef.current, totalBatchSize);
-          } else {
-             // Hard failure — peer disconnected or fatal error
-             isCancelledRef.current = true;
-             throw new Error('Failed to send chunk after max retries. Connection lost.');
+          // Synchronous pump: fire all chunks in this batch without yielding
+          for (const chunk of batch.chunks) {
+            if (isCancelledRef.current) break;
+
+            if (skipChunks.has(chunk.chunk_id)) {
+              totalSentRef.current += chunk.size;
+              updateProgressRef(totalSentRef.current, totalBatchSize);
+              continue;
+            }
+
+            // Build chunk packet: [4-byte chunkId][raw data]
+            const packet = new Uint8Array(4 + chunk.data.byteLength);
+            new DataView(packet.buffer).setUint32(0, chunk.chunk_id);
+            packet.set(new Uint8Array(chunk.data), 4);
+
+            // Synchronous send — no await unless it actually fails
+            let sent = send(packet.buffer);
+            if (!sent) sent = await retrySend(() => send(packet.buffer));
+            
+            if (sent) {
+              totalSentRef.current += chunk.size;
+              updateProgressRef(totalSentRef.current, totalBatchSize);
+            } else {
+              isCancelledRef.current = true;
+              throw new Error('Failed to send chunk after max retries. Connection lost.');
+            }
           }
+
+          // After pumping all chunks in this batch, check backpressure ONCE
+          // (instead of per-chunk, saving ~31 microtask yields per 2MB batch)
+          await waitForBufferRef.current();
+          
+          offset = batch.nextOffset;
+          chunkId = batch.nextChunkId;
         }
         await retrySend(() => send(JSON.stringify({ type: 'file-end', index: i })));
       }

@@ -97,8 +97,6 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         dataChannelRef.current = dc;
 
         dc.binaryType = 'arraybuffer';
-        // Detect Safari vs Chromium/Firefox to dynamically scale performance buffers without breaking iOS
-        const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
         // Keep WebRTC queues lean to maximize SCTP window throughput
         dc.bufferedAmountLowThreshold = 512 * 1024; // Wake up loop when buffer drops below 512KB
 
@@ -476,30 +474,29 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId]);
 
-    const waitForBuffer = useCallback(() => {
+    // Pre-allocated resolved promise — avoids allocating a new Promise on every call
+    const RESOLVED = Promise.resolve();
+    
+    const waitForBuffer = useCallback((): Promise<void> => {
         if (isRelayActive && socketRef.current) {
-            // WebSockets buffer logic: wait if bufferedAmount exceeds 1MB 
+            if (socketRef.current.bufferedAmount <= 1024 * 1024) return RESOLVED;
             return new Promise<void>((resolve) => {
                 const checkWSBuffer = () => {
                     if (!socketRef.current || socketRef.current.bufferedAmount <= 1024 * 1024) {
                         resolve();
                     } else {
-                        setTimeout(checkWSBuffer, 50);
+                        setTimeout(checkWSBuffer, 10);
                     }
                 };
                 checkWSBuffer();
             });
         }
-        // Keeping the buffer small (1MB) ensures we don't overwhelm the browser's SCTP stack,
-        // which drastically improves actual throughput by avoiding congestion collapse.
+        // 1MB high-water mark — lean enough to avoid SCTP congestion collapse
         const HIGH_WATER = 1024 * 1024;
+
+        if (!dataChannel || dataChannel.bufferedAmount <= HIGH_WATER) return RESOLVED;
         
         return new Promise<void>((resolve) => {
-            if (!dataChannel || dataChannel.bufferedAmount <= HIGH_WATER) {
-                resolve();
-                return;
-            }
-            // bufferedAmountLowThreshold is set to 2MB — event fires when buffer drains to that level
             const listener = () => {
                 dataChannel.removeEventListener('bufferedamountlow', listener);
                 resolve();
