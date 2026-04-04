@@ -21,7 +21,6 @@ export default function Footer() {
             <h4 className="text-sm font-black uppercase tracking-wider text-(--text)">Product</h4>
             <div className="flex flex-col gap-2">
               <Link href="/" className="text-(--text-secondary) text-sm font-medium hover:text-(--text) transition-colors">Transfer Files</Link>
-              <Link href="/nearby" className="text-(--text-secondary) text-sm font-medium hover:text-(--text) transition-colors">Nearby Devices</Link>
               <Link href="/faq" className="text-(--text-secondary) text-sm font-medium hover:text-(--text) transition-colors">FAQ</Link>
             </div>
           </div>

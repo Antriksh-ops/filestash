@@ -212,7 +212,7 @@ export default function Home() {
 
               {/* Nearby devices option */}
               <button
-                onClick={() => window.location.href = '/nearby'}
+                onClick={() => setShowNearbyModal(true)}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-(--input-bg) border-2 border-(--border) hover:bg-(--card-hover) transition-all text-left"
               >
                 <div className="w-2.5 h-2.5 rounded-full bg-(--accent-emerald) animate-pulse shrink-0" />
