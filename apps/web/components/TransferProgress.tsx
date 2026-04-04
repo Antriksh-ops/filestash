@@ -32,13 +32,13 @@ export default function TransferProgress({
         if (signalingState === 3 || signalingState === 2) return 'OFFLINE'; // WebSocket.CLOSED or CLOSING
         if (channelState === 'open') {
             if (status === 'sending') return 'SENDING';
-            return receivedBytes > 0 ? 'RECEIVING' : 'WAITING FOR SENDER';
+            return (receivedBytes > 0 || progress > 0) ? 'RECEIVING' : 'WAITING FOR SENDER';
         }
         if (status === 'sending') {
             return signalingState === WebSocket.OPEN ? 'WAITING FOR PEER' : 'INITIALIZING...';
         }
         return signalingState === WebSocket.OPEN ? 'CONNECTING...' : 'SIGNALING LOST';
-    }, [status, channelState, receivedBytes, signalingState]);
+    }, [status, channelState, receivedBytes, signalingState, progress]);
 
     return (
         <div className="space-y-4">

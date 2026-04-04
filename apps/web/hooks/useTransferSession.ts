@@ -195,6 +195,7 @@ export function useTransferSession() {
         setCurrentFileIndex(0);
         setProgress(0);
         startTimeRef.current = Date.now();
+        setIsTransferStarted(true);
         setStatus('receiving');
 
         // Initialize transfer state for resume tracking
