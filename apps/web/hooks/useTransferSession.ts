@@ -594,6 +594,31 @@ export function useTransferSession() {
     }
   }, [sessionId, channelState, startTransfer, status]);
 
+  // Generate empty session for Nearby Modal without triggering UI changes
+  const generateEmptySession = useCallback(async () => {
+    if (sessionId) return;
+    try {
+      const response = await fetch(`${CONFIG.SIGNALING_URL_HTTP}/session/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: [] })
+      });
+      const data = await response.json();
+      setSessionId(data.sessionId);
+      window.history.pushState({}, '', `?s=${data.sessionId}`);
+
+      fetch(`${CONFIG.SIGNALING_URL_HTTP}/nearby/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: data.sessionId }),
+      }).catch(() => {});
+    } catch {
+      const sid = Math.random().toString(36).substring(2, 8).toUpperCase();
+      setSessionId(sid);
+      window.history.pushState({}, '', `?s=${sid}`);
+    }
+  }, [sessionId]);
+
   // Trigger transfer — uses a ref for files to keep deps stable
   const filesRef = useRef(files);
   useEffect(() => { filesRef.current = files; }, [files]);
@@ -677,6 +702,6 @@ export function useTransferSession() {
     error, setError, eta, showRelayPrompt, setShowRelayPrompt, currentFileIndex,
     receivedBytes: receivedSizeRef.current, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
-    reconnectP2P, activateRelay, isPaused, togglePause
+    reconnectP2P, activateRelay, isPaused, togglePause, generateEmptySession
   };
 }

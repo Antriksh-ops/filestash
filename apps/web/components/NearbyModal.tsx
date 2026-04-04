@@ -11,9 +11,12 @@ interface NearbyModalProps {
 export default function NearbyModal({ onClose, currentSessionId, onEnsureSession }: NearbyModalProps) {
   const [nearbyPeers, setNearbyPeers] = useState<{code: string; sessionId: string}[]>([]);
 
+  const hasEnsuredRef = React.useRef(false);
+
   // If no session exists, create one empty so we have a QR code to show
   useEffect(() => {
-    if (!currentSessionId) {
+    if (!currentSessionId && !hasEnsuredRef.current) {
+      hasEnsuredRef.current = true;
       onEnsureSession();
     }
   }, [currentSessionId, onEnsureSession]);
