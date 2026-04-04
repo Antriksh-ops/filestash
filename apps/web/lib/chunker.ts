@@ -1,14 +1,17 @@
 /**
  * High-performance file chunker with read-ahead pipeline.
  * 
- * Uses 1MB chunks to minimize per-chunk overhead (file reads, buffer copies,
- * dc.send() calls). The browser's SCTP layer handles internal fragmentation.
+ * Uses 250KB chunks — the maximum safe size for cross-browser WebRTC.
+ * Safari's SCTP max message size is ~256KB (262144 bytes). With the
+ * 4-byte chunk ID header, messages are 250KB + 4 = ~250KB, safely
+ * under Safari's limit.
  * 
  * Read-ahead: starts reading the NEXT chunk from disk while the current
  * chunk is being sent, overlapping I/O with network transfer.
  */
 
-export const CHUNK_SIZE = 1024 * 1024; // 1MB — 4x fewer iterations than 256KB
+// 250KB — fits in Safari's 256KB SCTP max message size (with 4-byte header)
+export const CHUNK_SIZE = 250 * 1024;
 
 export interface Chunk {
     chunk_id: number;

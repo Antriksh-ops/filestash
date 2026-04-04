@@ -201,7 +201,7 @@ export function useTransferSession() {
         // Initialize transfer state for resume tracking
         const totalSize = message.files.reduce((a: number, f: { size: number }) => a + f.size, 0);
         // Estimate total chunks (we'll refine as we receive)
-        const estChunks = Math.ceil(totalSize / (1024 * 1024)); // 1MB chunks
+        const estChunks = Math.ceil(totalSize / (250 * 1024)); // 250KB chunks
         transferStateRef.current = {
           sessionId: sessionId || '',
           files: message.files,
