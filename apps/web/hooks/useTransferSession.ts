@@ -326,7 +326,7 @@ export function useTransferSession() {
     }
   }, [updateProgressRef, sessionId, processChunk]);
 
-  const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, isRelayActive, activateRelay, reconnectP2P, signalingState } = useWebRTC({
+  const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, isRelayActive, activateRelay, reconnectP2P, signalingState, candidateType } = useWebRTC({
     sessionId: sessionId || '',
     // Fix #1: Use explicit role instead of deriving from reactive state
     isSender: role === 'sender',
@@ -500,12 +500,8 @@ export function useTransferSession() {
             continue;
           }
 
-          // Sliding Window Pacing: wait if we've blasted more than 10MB ahead of receiver
-          while (totalSentRef.current - peerAckSizeRef.current > 10 * 1024 * 1024 && !isCancelledRef.current) {
-            await new Promise(r => setTimeout(r, 50));
-          }
-
-          // Backpressure: only wait when OS buffer is actually full
+          // Backpressure: SCTP flow control + high-water mark handles throughput pacing
+          // (sliding window removed — it was throttling LAN speeds to ~1MB/s)
           await waitForBufferRef.current();
           if (isCancelledRef.current) break;
 
@@ -696,6 +692,6 @@ export function useTransferSession() {
     error, setError, eta, showRelayPrompt, setShowRelayPrompt, currentFileIndex,
     receivedBytes: receivedSizeRef.current, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
-    reconnectP2P, activateRelay, isPaused, togglePause
+    reconnectP2P, activateRelay, isPaused, togglePause, candidateType
   };
 }

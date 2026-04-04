@@ -25,6 +25,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const [channelState, setChannelState] = useState<RTCDataChannelState>('closed');
     const [isRelayActive, setIsRelayActive] = useState(false);
     const [signalingState, setSignalingState] = useState<number>(WebSocket.CLOSED);
+    // ICE candidate pair diagnostics — shows actual connection route
+    const [candidateType, setCandidateType] = useState<string>('unknown');
 
     const socketRef = useRef<WebSocket | null>(null);
     const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -95,7 +97,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         dataChannelRef.current = dc;
 
         dc.binaryType = 'arraybuffer';
-        dc.bufferedAmountLowThreshold = 256 * 1024; // 256KB — resume sending faster to keep pipe full
+        // High threshold: resume sending when buffer drains to 2MB (keeps pipe full for LAN speeds)
+        dc.bufferedAmountLowThreshold = 2 * 1024 * 1024;
 
         dc.onopen = () => {
             // Only update state if this is still the active channel
@@ -380,6 +383,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
 
                 if (pc.connectionState === 'connected') {
                     if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
+                    // Detect actual ICE candidate pair type to show connection route
+                    detectCandidateRoute(pc);
                 }
 
                 if (pc.connectionState === 'failed' || pc.iceConnectionState === 'failed') {
@@ -415,6 +420,45 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             drainSignalingQueue();
         };
 
+        // Detect which ICE candidate type is being used (host=LAN, srflx=NAT, relay=TURN)
+        const detectCandidateRoute = async (pc: RTCPeerConnection) => {
+            try {
+                const stats = await pc.getStats();
+                let nominatedLocalId = '';
+                let nominatedRemoteId = '';
+                stats.forEach((report: any) => {
+                    if (report.type === 'candidate-pair' && (report.nominated || report.state === 'succeeded')) {
+                        nominatedLocalId = report.localCandidateId;
+                        nominatedRemoteId = report.remoteCandidateId;
+                    }
+                });
+                let localType = 'unknown';
+                let remoteType = 'unknown';
+                let localAddr = '';
+                stats.forEach((report: any) => {
+                    if (report.id === nominatedLocalId) {
+                        localType = report.candidateType || 'unknown';
+                        localAddr = report.address || report.ip || '';
+                    }
+                    if (report.id === nominatedRemoteId) {
+                        remoteType = report.candidateType || 'unknown';
+                    }
+                });
+                const route = localType === 'relay' || remoteType === 'relay' ? 'relay' : localType;
+                setCandidateType(route);
+                console.log(`🔍 [ICE Route] Local: ${localType} (${localAddr}) | Remote: ${remoteType} → Route: ${route}`);
+                if (route === 'relay') {
+                    console.warn('⚠️ Connection is going through a TURN relay server — speeds will be limited!');
+                } else if (route === 'host') {
+                    console.log('✅ Direct LAN connection established — maximum speed!');
+                } else if (route === 'srflx' || route === 'prflx') {
+                    console.log('✅ NAT traversal P2P — good speed, not relayed');
+                }
+            } catch (e) {
+                console.warn('[ICE] Failed to detect candidate route:', e);
+            }
+        };
+
         init();
 
         return () => {
@@ -438,17 +482,21 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                     if (!socketRef.current || socketRef.current.bufferedAmount <= 1024 * 1024) {
                         resolve();
                     } else {
-                        setTimeout(checkWSBuffer, 50); // Poll every 50ms for relay backpressure
+                        setTimeout(checkWSBuffer, 50);
                     }
                 };
                 checkWSBuffer();
             });
         }
+        // High-water mark: keep sending until 8MB buffered, then wait for drain to 2MB
+        // This keeps the SCTP pipe full for maximum throughput on LAN
+        const HIGH_WATER = 8 * 1024 * 1024;
         return new Promise<void>((resolve) => {
-            if (!dataChannel || dataChannel.bufferedAmount <= dataChannel.bufferedAmountLowThreshold) {
+            if (!dataChannel || dataChannel.bufferedAmount <= HIGH_WATER) {
                 resolve();
                 return;
             }
+            // bufferedAmountLowThreshold is set to 2MB — event fires when buffer drains to that level
             const listener = () => {
                 dataChannel.removeEventListener('bufferedamountlow', listener);
                 resolve();
@@ -515,6 +563,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         activateRelay,
         reconnectP2P,
         signalingState,
-        sendSignaling
+        sendSignaling,
+        candidateType
     };
 }

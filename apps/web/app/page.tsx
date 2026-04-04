@@ -16,7 +16,7 @@ export default function Home() {
     error, setError, eta, showRelayPrompt, setShowRelayPrompt,
     receivedBytes, channelState, signalingState,
     isRelayActive, handleFileSelect, handleJoinByCode, handleCancel, downloadAll,
-    reconnectP2P, activateRelay, isPaused, togglePause
+    reconnectP2P, activateRelay, isPaused, togglePause, candidateType
   } = useTransferSession();
 
 
@@ -234,6 +234,7 @@ export default function Home() {
                   signalingState={signalingState}
                   channelState={channelState}
                   isRelayActive={isRelayActive}
+                  candidateType={candidateType}
                 />
                 <TransferProgress
                   progress={progress}
