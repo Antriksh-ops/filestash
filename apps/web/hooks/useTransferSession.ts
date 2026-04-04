@@ -292,6 +292,9 @@ export function useTransferSession() {
 
           // removed backwards progress sync
           if (receivedSizeRef.current >= totalSize) {
+            // Check if data was written to a file stream or accumulated in memory
+            const wasStreaming = !!writableRef.current || !!streamWriterRef.current;
+
             setStatus('completed');
             progressRef.current = 100;
             etaRef.current = null;
@@ -307,6 +310,47 @@ export function useTransferSession() {
             }
             await flushPendingSave();
             if (sessionId) deleteTransferState(sessionId);
+
+            // Auto-download if data was accumulated in memory (no file picker / SW stream)
+            // This handles fast transfers where the user can't react in time
+            if (!wasStreaming && fileChunksMapRef.current.size > 0 && meta) {
+              setTimeout(() => {
+                if (meta.files.length === 1) {
+                  const chunks = fileChunksMapRef.current.get(0);
+                  if (chunks && chunks.length > 0) {
+                    const blob = new Blob(chunks);
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = meta.files[0].name;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }
+                } else if (meta.files.length > 1) {
+                  const zipData: Record<string, Uint8Array> = {};
+                  for (let i = 0; i < meta.files.length; i++) {
+                    const chunks = fileChunksMapRef.current.get(i);
+                    if (!chunks || chunks.length === 0) continue;
+                    const totalLen = chunks.reduce((acc, c) => acc + c.byteLength, 0);
+                    const buf = new Uint8Array(totalLen);
+                    let offset = 0;
+                    for (const c of chunks) {
+                      buf.set(new Uint8Array(c), offset);
+                      offset += c.byteLength;
+                    }
+                    zipData[meta.files[i].name] = buf;
+                  }
+                  const zipped = fflate.zipSync(zipData, { level: 0 });
+                  const blob = new Blob([zipped as any], { type: 'application/zip' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'filedrop-files.zip';
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }
+              }, 300); // Small delay to let UI update to completed state
+            }
           } else {
             // Update transfer state for resume (debounced inside markChunkCompleted)
             if (transferStateRef.current) {
