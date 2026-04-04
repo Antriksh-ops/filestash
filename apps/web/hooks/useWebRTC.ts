@@ -159,7 +159,10 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const isProcessingSignalingRef = useRef(false);
 
     const processSignalingMessage = useCallback(async (message: { type?: string; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[]; action?: string }) => {
-        if (!pcRef.current) return;
+        if (!pcRef.current) {
+            console.warn('[SIGNALLING] PeerConnection not ready, buffering message...');
+            return false;
+        }
 
         console.log(`[SIGNALLING] Processing: ${message.type || message.offer ? 'offer' : message.answer ? 'answer' : message.candidate ? 'candidate' : 'unknown'}`);
 
@@ -225,16 +228,28 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     }, [createOffer, sendSignaling]);
 
     // Queued handler: serializes signaling messages to prevent race conditions
-    const handleSignalingMessage = useCallback(async (message: any) => {
-        signalingQueueRef.current.push(message);
-        if (isProcessingSignalingRef.current) return; // already draining
+    const drainSignalingQueue = useCallback(async () => {
+        if (isProcessingSignalingRef.current || !pcRef.current) return;
         isProcessingSignalingRef.current = true;
+
         while (signalingQueueRef.current.length > 0) {
-            const next = signalingQueueRef.current.shift();
-            try { await processSignalingMessage(next); } catch (e) { console.error('[SIGNALLING] Error processing message:', e); }
+            const next = signalingQueueRef.current[0];
+            try {
+                const handled = await processSignalingMessage(next);
+                if (handled === false) break; // Still not ready, keep in queue
+                signalingQueueRef.current.shift(); // Successfully processed
+            } catch (e) {
+                console.error('[SIGNALLING] Error processing message:', e);
+                signalingQueueRef.current.shift(); // Drop malformed message
+            }
         }
         isProcessingSignalingRef.current = false;
     }, [processSignalingMessage]);
+
+    const handleSignalingMessage = useCallback(async (message: any) => {
+        signalingQueueRef.current.push(message);
+        drainSignalingQueue();
+    }, [drainSignalingQueue]);
 
     // Keep the ref always up-to-date
     useEffect(() => {
@@ -360,11 +375,13 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 // Don't create offer yet — wait for peer_joined signal
                 // This prevents creating duplicate data channels
                 console.log('[P2P] Sender ready, waiting for peer to join...');
-            } else {
                 pc.ondatachannel = (event) => {
                     setupDataChannel(event.channel);
                 };
             }
+
+            // [RACE CONDITION FIX] Process any messages that arrived while we were initializing
+            drainSignalingQueue();
         };
 
         init();

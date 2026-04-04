@@ -327,7 +327,7 @@ export function useTransferSession() {
 
   const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, isRelayActive, activateRelay, reconnectP2P, signalingState } = useWebRTC({
     sessionId: sessionId || '',
-    isSender: files.length > 0,
+    isSender: status === 'sending' || files.length > 0,
     onDataChannelMessage: handleRawMessage,
     onMessage: (msg: any) => {
       if (msg && typeof msg === 'object' && 'type' in msg && msg.type === 'force-relay') return;
@@ -666,9 +666,10 @@ export function useTransferSession() {
       } catch {}
       setError('Invalid or expired 4-digit code');
     } else if (joinCode.length === 6) {
-      setSessionId(joinCode.toUpperCase());
+      const code = joinCode.trim().toUpperCase();
+      setSessionId(code);
       setStatus('receiving');
-      window.history.pushState({}, '', `?s=${joinCode.toUpperCase()}`);
+      window.history.pushState({}, '', `?s=${code}`);
     }
   };
 

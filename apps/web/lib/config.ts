@@ -9,12 +9,12 @@ const getSignalingURL = () => {
             return envUrl;
         }
 
-        // If on production but no URL set, we can try to guess a subdomain or just warn
+        // Production Fallback: connect to the Render signaling server
         if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-            console.warn('PRODUCTION DETECTED or ON LOCAL NETWORK: using window.location.hostname for signaling');
+            return 'wss://filestash-z8go.onrender.com';
         }
 
-        return `ws://${window.location.hostname}:8080`;
+        return `ws://localhost:8080`;
     }
     return process.env.NEXT_PUBLIC_SIGNALING_URL && !process.env.NEXT_PUBLIC_SIGNALING_URL.includes('SIGNALLING_SERVER_HOST')
         ? process.env.NEXT_PUBLIC_SIGNALING_URL
