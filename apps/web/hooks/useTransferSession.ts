@@ -142,18 +142,20 @@ export function useTransferSession() {
   const processChunk = useCallback(async (data: ArrayBuffer) => {
     const view = new DataView(data);
     const chunkId = view.getUint32(0);
-    const rawData = data.slice(4);
-    const chunkSize = rawData.byteLength; // Cache size before transfer
+    const chunkSize = data.byteLength - 4;
 
     // --- Write to the best available target ---
     if (writableRef.current) {
-      // Desktop: FileSystem Access API
-      await writableRef.current.write(rawData);
+      // Desktop: FileSystem Access API — use a view to avoid copying the entire chunk
+      const rawView = new Uint8Array(data, 4);
+      await writableRef.current.write(rawView);
     } else if (streamWriterRef.current) {
-      // Mobile: Service Worker stream proxy — zero RAM accumulation
+      // Mobile: Service Worker stream proxy — needs standalone buffer for transfer
+      const rawData = data.slice(4);
       streamWriterRef.current.write(rawData); // rawData is detached here!
     } else {
       // Fallback: in-memory accumulation (last resort)
+      const rawData = data.slice(4);
       const currentIdx = currentFileIndex;
       if (!fileChunksMapRef.current.has(currentIdx)) {
         fileChunksMapRef.current.set(currentIdx, []);
@@ -198,7 +200,7 @@ export function useTransferSession() {
         // Initialize transfer state for resume tracking
         const totalSize = message.files.reduce((a: number, f: { size: number }) => a + f.size, 0);
         // Estimate total chunks (we'll refine as we receive)
-        const estChunks = Math.ceil(totalSize / (256 * 1024)); // conservative estimate
+        const estChunks = Math.ceil(totalSize / (1024 * 1024)); // 1MB chunks
         transferStateRef.current = {
           sessionId: sessionId || '',
           files: message.files,
