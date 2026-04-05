@@ -413,9 +413,82 @@ export function useTransferSession() {
     }
   }, [updateProgressRef, sessionId, processChunk]);
 
-  const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, pumpSend, isRelayActive, activateRelay, reconnectP2P, signalingState, candidateType } = useWebRTC({
+  // --- Extra data lanes for multi-connection throughput ---
+  const EXTRA_LANES = 3; // + 1 primary = 4 total
+  const extraPcsRef = useRef<RTCPeerConnection[]>([]);
+  const extraDcsRef = useRef<RTCDataChannel[]>([]);
+  const pendingExtraCandidatesRef = useRef<Map<number, RTCIceCandidateInit[]>>(new Map());
+
+  // Handle signaling for extra data lanes (slots 1-3)
+  const handleSlotSignaling = useCallback(async (slot: number, message: any) => {
+    const idx = slot - 1; // slot 1 → index 0
+
+    if (message.offer) {
+      // Receiver: create PC for this lane, set offer, send answer
+      const config = iceConfigRef.current;
+      if (!config) return;
+      const pc = new RTCPeerConnection(config);
+      extraPcsRef.current[idx] = pc;
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          sendSignalingRef.current({ candidate: e.candidate, slot });
+        }
+      };
+      pc.ondatachannel = (e) => {
+        const dc = e.channel;
+        dc.binaryType = 'arraybuffer';
+        dc.onopen = () => console.log(`[LANE ${slot}] Data channel opened`);
+        dc.onmessage = (ev) => {
+          if (ev.data instanceof ArrayBuffer) {
+            messageHandlerRef.current?.(ev.data);
+          }
+        };
+        extraDcsRef.current[idx] = dc;
+      };
+
+      await pc.setRemoteDescription(new RTCSessionDescription(message.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignalingRef.current({ answer, slot });
+
+      // Process any buffered candidates
+      const pending = pendingExtraCandidatesRef.current.get(slot) || [];
+      for (const c of pending) {
+        await pc.addIceCandidate(c);
+      }
+      pendingExtraCandidatesRef.current.delete(slot);
+
+    } else if (message.answer) {
+      // Sender: set answer on the right PC
+      const pc = extraPcsRef.current[idx];
+      if (pc) await pc.setRemoteDescription(new RTCSessionDescription(message.answer));
+      // Process buffered candidates
+      const pending = pendingExtraCandidatesRef.current.get(slot) || [];
+      for (const c of pending) {
+        await pc.addIceCandidate(c);
+      }
+      pendingExtraCandidatesRef.current.delete(slot);
+
+    } else if (message.candidate) {
+      const pc = extraPcsRef.current[idx];
+      if (pc && pc.remoteDescription) {
+        await pc.addIceCandidate(message.candidate);
+      } else {
+        // Buffer candidate
+        if (!pendingExtraCandidatesRef.current.has(slot)) {
+          pendingExtraCandidatesRef.current.set(slot, []);
+        }
+        pendingExtraCandidatesRef.current.get(slot)!.push(message.candidate);
+      }
+    }
+  }, []);
+
+  const messageHandlerRef = useRef(handleRawMessage);
+  useEffect(() => { messageHandlerRef.current = handleRawMessage; }, [handleRawMessage]);
+
+  const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, pumpSend, isRelayActive, activateRelay, reconnectP2P, signalingState, candidateType, iceConfigRef } = useWebRTC({
     sessionId: sessionId || '',
-    // Fix #1: Use explicit role instead of deriving from reactive state
     isSender: role === 'sender',
     onDataChannelMessage: handleRawMessage,
     onMessage: (msg: any) => {
@@ -429,11 +502,155 @@ export function useTransferSession() {
     onComplete: () => {
       releaseWakeLock();
       setStatus('completed');
-    }
+    },
+    onSlotSignaling: handleSlotSignaling,
   });
 
   const sendSignalingRef = useRef(sendSignaling);
   const pumpSendRef = useRef(pumpSend);
+
+  // Create extra data lanes (sender-initiated)
+  const openExtraLanes = useCallback(async () => {
+    const config = iceConfigRef.current;
+    if (!config) {
+      console.warn('[LANES] No ICE config available');
+      return;
+    }
+
+    for (let i = 0; i < EXTRA_LANES; i++) {
+      const slot = i + 1;
+      const pc = new RTCPeerConnection(config);
+      extraPcsRef.current[i] = pc;
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          sendSignalingRef.current({ candidate: e.candidate, slot });
+        }
+      };
+
+      const dc = pc.createDataChannel(`lane-${slot}`, { ordered: false });
+      dc.binaryType = 'arraybuffer';
+      dc.bufferedAmountLowThreshold = 1 * 1024 * 1024;
+      dc.onopen = () => console.log(`[LANE ${slot}] Data channel opened`);
+      dc.onerror = (e) => console.warn(`[LANE ${slot}] Error:`, e);
+      extraDcsRef.current[i] = dc;
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignalingRef.current({ offer, slot });
+      console.log(`[LANE ${slot}] Offer sent`);
+    }
+  }, [iceConfigRef]);
+
+  const closeExtraLanes = useCallback(() => {
+    for (const dc of extraDcsRef.current) {
+      try { dc?.close(); } catch {}
+    }
+    for (const pc of extraPcsRef.current) {
+      try { pc?.close(); } catch {}
+    }
+    extraDcsRef.current = [];
+    extraPcsRef.current = [];
+    pendingExtraCandidatesRef.current.clear();
+  }, []);
+
+  // Multi-channel pump: round-robin across primary + extra channels
+  const multiPumpSend = useCallback((
+    packets: ArrayBuffer[],
+    onChunkSent?: (index: number) => void,
+    cancelledRef?: React.MutableRefObject<boolean>
+  ): Promise<void> => {
+    // Gather all open data channels
+    const allChannels: RTCDataChannel[] = [];
+    if (dataChannel && dataChannel.readyState === 'open') {
+      allChannels.push(dataChannel);
+    }
+    for (const dc of extraDcsRef.current) {
+      if (dc && dc.readyState === 'open') {
+        allChannels.push(dc);
+      }
+    }
+
+    if (allChannels.length === 0) {
+      return Promise.reject(new Error('No data channels open'));
+    }
+
+    console.log(`[PUMP] Using ${allChannels.length} channel(s)`);
+    const HIGH_WATER = 2 * 1024 * 1024;
+
+    return new Promise<void>((resolve, reject) => {
+      let idx = 0;
+      let robin = 0;
+
+      const drainListeners = new Map<RTCDataChannel, () => void>();
+
+      const cleanup = () => {
+        for (const [dc, listener] of drainListeners) {
+          dc.removeEventListener('bufferedamountlow', listener);
+        }
+        drainListeners.clear();
+      };
+
+      const pump = () => {
+        try {
+          while (idx < packets.length) {
+            if (cancelledRef?.current) { cleanup(); resolve(); return; }
+
+            // Find a channel with room (round-robin)
+            let sent = false;
+            for (let attempt = 0; attempt < allChannels.length; attempt++) {
+              const ci = (robin + attempt) % allChannels.length;
+              const dc = allChannels[ci];
+              if (dc.readyState !== 'open') continue;
+              if (dc.bufferedAmount <= HIGH_WATER) {
+                dc.send(packets[idx]);
+                onChunkSent?.(idx);
+                idx++;
+                robin = (ci + 1) % allChannels.length;
+                sent = true;
+                break;
+              }
+            }
+
+            if (!sent) {
+              // All channels full — wait for ANY to drain
+              for (const dc of allChannels) {
+                if (dc.readyState !== 'open') continue;
+                if (!drainListeners.has(dc)) {
+                  const listener = () => {
+                    cleanup();
+                    pump();
+                  };
+                  drainListeners.set(dc, listener);
+                  dc.addEventListener('bufferedamountlow', listener);
+                }
+              }
+              return; // Exit sync loop, will resume via callback
+            }
+          }
+          cleanup();
+          resolve();
+        } catch (e) {
+          if (e instanceof DOMException && e.name === 'OperationError') {
+            // Buffer overflow on one channel — wait for any drain
+            for (const dc of allChannels) {
+              if (dc.readyState !== 'open') continue;
+              if (!drainListeners.has(dc)) {
+                const listener = () => { cleanup(); pump(); };
+                drainListeners.set(dc, listener);
+                dc.addEventListener('bufferedamountlow', listener);
+              }
+            }
+          } else {
+            cleanup();
+            reject(e);
+          }
+        }
+      };
+
+      pump();
+    });
+  }, [dataChannel]);
 
   useEffect(() => {
     sendDataRef.current = sendData;
@@ -493,8 +710,9 @@ export function useTransferSession() {
     setRole(null);
     setError(null);
     setIsTransferStarted(false);
+    closeExtraLanes();
     window.history.pushState({}, '', window.location.pathname);
-  }, [dataChannel, sendData, sessionId]);
+  }, [dataChannel, sendData, sessionId, closeExtraLanes]);
 
   const togglePause = useCallback(() => {
     setIsPaused((prev) => {
@@ -582,6 +800,11 @@ export function useTransferSession() {
       await retrySend(() => send(JSON.stringify({ type: 'batch-metadata', files: filesToSend.map(f => ({ name: f.name, size: f.size })) })));
       const totalBatchSize = filesToSend.reduce((acc, f) => acc + f.size, 0);
 
+      // Open extra data lanes (3 more PeerConnections) for parallel throughput
+      await openExtraLanes();
+      // Wait for at least some extra lanes to connect (2s max)
+      await new Promise(r => setTimeout(r, 2000));
+
       const skipChunks = peerCompletedChunksRef.current;
       if (skipChunks.size > 0) {
         console.log(`[RESUME] Skipping ${skipChunks.size} chunks already received by peer`);
@@ -625,10 +848,10 @@ export function useTransferSession() {
             chunkSizes.push(chunk.size);
           }
 
-          // 3. Zero-async pump: sends all packets via native callback loop
-          //    ZERO microtask overhead — only yields when SCTP buffer is genuinely full
+          // 3. Multi-channel pump: distributes packets across ALL open data channels
+          //    (primary + up to 3 extra lanes) for 2-4x throughput
           if (packets.length > 0) {
-            await pumpSendRef.current(
+            await multiPumpSend(
               packets,
               (idx: number) => {
                 totalSentRef.current += chunkSizes[idx];
@@ -660,8 +883,9 @@ export function useTransferSession() {
       }
     } finally {
       isTransferringRef.current = false;
+      closeExtraLanes();
     }
-  }, [updateProgressRef, requestWakeLock, releaseWakeLock]);
+  }, [updateProgressRef, requestWakeLock, releaseWakeLock, multiPumpSend, openExtraLanes, closeExtraLanes]);
 
   const handleFileSelect = useCallback(async (selectedFiles: File[]) => {
     isCancelledRef.current = false;

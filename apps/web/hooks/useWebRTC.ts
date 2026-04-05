@@ -10,6 +10,8 @@ interface WebRTCOptions {
     onMessage?: (message: unknown) => void;
     onStalled?: () => void;
     onComplete?: () => void;
+    /** Signaling messages for extra data lanes (slot > 0) */
+    onSlotSignaling?: (slot: number, message: any) => void;
 }
 
 const RTC_CONFIG_BASE: Omit<RTCConfiguration, 'iceServers'> = {
@@ -18,7 +20,7 @@ const RTC_CONFIG_BASE: Omit<RTCConfiguration, 'iceServers'> = {
     iceTransportPolicy: 'all', // Ensure 'relay' candidates can be used
 };
 
-export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnectionStateChange, onMessage, onStalled, onComplete }: WebRTCOptions) {
+export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnectionStateChange, onMessage, onStalled, onComplete, onSlotSignaling }: WebRTCOptions) {
     const [peerConnection, setPeerConnection] = useState<RTCPeerConnection | null>(null);
     const [dataChannel, setDataChannel] = useState<RTCDataChannel | null>(null);
     // Fix #12: Default to 'closed' — no session exists yet at mount time
@@ -41,6 +43,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const stallTimerRef = useRef<NodeJS.Timeout | null>(null);
     const relayTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const isSenderRef = useRef(isSender);
+    const slotSignalingRef = useRef(onSlotSignaling);
+    const iceConfigRef = useRef<RTCConfiguration | null>(null);
 
     useEffect(() => {
         messageHandlerRef.current = onDataChannelMessage;
@@ -65,6 +69,10 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     useEffect(() => {
         isSenderRef.current = isSender;
     }, [isSender]);
+
+    useEffect(() => {
+        slotSignalingRef.current = onSlotSignaling;
+    }, [onSlotSignaling]);
 
     const sendSignaling = useCallback((msg: unknown) => {
         const json = JSON.stringify(msg);
@@ -180,7 +188,13 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
     const isProcessingSignalingRef = useRef(false);
 
     // Fix #7: Explicit return type — false means "not ready, keep in queue", true means "processed"
-    const processSignalingMessage = useCallback(async (message: { type?: string; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[]; action?: string }): Promise<boolean> => {
+    const processSignalingMessage = useCallback(async (message: { type?: string; slot?: number; offer?: RTCSessionDescriptionInit; answer?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit; publicKey?: number[]; action?: string }): Promise<boolean> => {
+        // Route extra data lane signaling (slot > 0) to useTransferSession
+        if (message.slot && message.slot > 0) {
+            slotSignalingRef.current?.(message.slot, message);
+            return true;
+        }
+
         if (!pcRef.current) {
             console.warn('[SIGNALLING] PeerConnection not ready, buffering message...');
             return false;
@@ -195,7 +209,6 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             if (relayTimeoutRef.current) clearTimeout(relayTimeoutRef.current);
             return true;
         }
-
 
 
         if (message.type === 'peer_joined' && isSenderRef.current) {
@@ -372,6 +385,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 ...RTC_CONFIG_BASE,
                 iceServers,
             };
+            iceConfigRef.current = rtcConfig;
 
             const pc = new RTCPeerConnection(rtcConfig);
             pcRef.current = pc;
@@ -670,6 +684,7 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         reconnectP2P,
         signalingState,
         sendSignaling,
-        candidateType
+        candidateType,
+        iceConfigRef
     };
 }
