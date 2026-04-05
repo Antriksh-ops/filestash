@@ -889,14 +889,9 @@ export function useTransferSession() {
     try {
       const send = (data: string | ArrayBuffer) => sendDataRef.current(data);
 
-      // Control messages use retrySend (rare, small)
-      await retrySend(() => send(JSON.stringify({ type: 'batch-metadata', files: filesToSend.map(f => ({ name: f.name, size: f.size })) })));
-      const totalBatchSize = filesToSend.reduce((acc, f) => acc + f.size, 0);
-
-      // Wait for receiver to confirm file writer is open (file picker resolved)
-      // This prevents flooding data before the receiver can write to disk
-      console.log('[SENDER] Waiting for receiver-ready...');
-      await new Promise<void>((resolve) => {
+      // Set up receiver-ready listener BEFORE sending metadata (prevents race condition)
+      // If receiver responds instantly (Safari, no file picker), we won't miss the signal
+      const receiverReadyPromise = new Promise<void>((resolve) => {
         receiverReadyResolveRef.current = resolve;
         // Timeout: don't wait forever (receiver might not support handshake)
         setTimeout(() => {
@@ -905,8 +900,16 @@ export function useTransferSession() {
             receiverReadyResolveRef.current = null;
             resolve();
           }
-        }, 30000);
+        }, 15000);
       });
+
+      // Control messages use retrySend (rare, small)
+      await retrySend(() => send(JSON.stringify({ type: 'batch-metadata', files: filesToSend.map(f => ({ name: f.name, size: f.size })) })));
+      const totalBatchSize = filesToSend.reduce((acc, f) => acc + f.size, 0);
+
+      // Wait for receiver to confirm file writer is open (file picker resolved)
+      console.log('[SENDER] Waiting for receiver-ready...');
+      await receiverReadyPromise;
       console.log('[SENDER] Receiver ready — opening lanes');
 
       // Open extra data lanes (15 more PeerConnections) for parallel throughput
