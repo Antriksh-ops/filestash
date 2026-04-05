@@ -409,7 +409,7 @@ export function useTransferSession() {
     }
   }, [updateProgressRef, sessionId, processChunk]);
 
-  const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, isRelayActive, activateRelay, reconnectP2P, signalingState, candidateType } = useWebRTC({
+  const { sendData, sendSignaling, dataChannel, channelState, waitForBuffer, pumpSend, isRelayActive, activateRelay, reconnectP2P, signalingState, candidateType } = useWebRTC({
     sessionId: sessionId || '',
     // Fix #1: Use explicit role instead of deriving from reactive state
     isSender: role === 'sender',
@@ -429,12 +429,14 @@ export function useTransferSession() {
   });
 
   const sendSignalingRef = useRef(sendSignaling);
+  const pumpSendRef = useRef(pumpSend);
 
   useEffect(() => {
     sendDataRef.current = sendData;
     sendSignalingRef.current = sendSignaling;
     waitForBufferRef.current = waitForBuffer;
-  }, [sendData, sendSignaling, waitForBuffer]);
+    pumpSendRef.current = pumpSend;
+  }, [sendData, sendSignaling, waitForBuffer, pumpSend]);
 
 
 
@@ -591,7 +593,7 @@ export function useTransferSession() {
         let offset = 0;
         let chunkId = 0;
 
-        // Batch-pump loop: read 2MB from disk in one await, then send chunks
+        // Batch-pump loop: read 4MB from disk, build packets, pump via zero-async callback
         while (offset < file.size) {
           if (isCancelledRef.current) break;
 
@@ -600,41 +602,36 @@ export function useTransferSession() {
           }
           if (isCancelledRef.current) break;
 
-          // Single await: read up to 2MB from disk at once
-          const batch = await readChunkBatch(file, fileId, offset, chunkId, 2 * 1024 * 1024);
+          // 1. Read up to 4MB from disk in one await
+          const batch = await readChunkBatch(file, fileId, offset, chunkId, 4 * 1024 * 1024);
           
+          // 2. Build all packets synchronously (no awaits)
+          const packets: ArrayBuffer[] = [];
+          const chunkSizes: number[] = [];
           for (const chunk of batch.chunks) {
-            if (isCancelledRef.current) break;
-
             if (skipChunks.has(chunk.chunk_id)) {
               totalSentRef.current += chunk.size;
               updateProgressRef(totalSentRef.current, totalBatchSize);
               continue;
             }
-
-            // CRITICAL: check backpressure BEFORE each send.
-            // With ordered:false, overflowing the SCTP buffer throws OperationError
-            // which kills the data channel. waitForBuffer returns a pre-resolved
-            // singleton when buffer is OK (essentially free), so this is zero-cost
-            // in the fast path.
-            await waitForBufferRef.current();
-            if (isCancelledRef.current) break;
-
-            // Build chunk packet: [4-byte chunkId][raw data]
             const packet = new Uint8Array(4 + chunk.data.byteLength);
             new DataView(packet.buffer).setUint32(0, chunk.chunk_id);
             packet.set(new Uint8Array(chunk.data), 4);
+            packets.push(packet.buffer);
+            chunkSizes.push(chunk.size);
+          }
 
-            let sent = send(packet.buffer);
-            if (!sent) sent = await retrySend(() => send(packet.buffer));
-            
-            if (sent) {
-              totalSentRef.current += chunk.size;
-              updateProgressRef(totalSentRef.current, totalBatchSize);
-            } else {
-              isCancelledRef.current = true;
-              throw new Error('Failed to send chunk after max retries. Connection lost.');
-            }
+          // 3. Zero-async pump: sends all packets via native callback loop
+          //    ZERO microtask overhead — only yields when SCTP buffer is genuinely full
+          if (packets.length > 0) {
+            await pumpSendRef.current(
+              packets,
+              (idx: number) => {
+                totalSentRef.current += chunkSizes[idx];
+                updateProgressRef(totalSentRef.current, totalBatchSize);
+              },
+              isCancelledRef
+            );
           }
           
           offset = batch.nextOffset;
