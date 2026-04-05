@@ -417,7 +417,7 @@ export function useTransferSession() {
   }, [updateProgressRef, sessionId, processChunk]);
 
   // --- Extra data lanes for multi-connection throughput ---
-  const EXTRA_LANES = 7; // + 1 primary = 8 total
+  const EXTRA_LANES = 15; // + 1 primary = 16 total
   const extraPcsRef = useRef<RTCPeerConnection[]>([]);
   const extraDcsRef = useRef<RTCDataChannel[]>([]);
   const pendingExtraCandidatesRef = useRef<Map<number, RTCIceCandidateInit[]>>(new Map());
@@ -532,7 +532,7 @@ export function useTransferSession() {
       const timeout = setTimeout(() => {
         console.log(`[LANES] Timeout — proceeding with ${openCount} extra lane(s)`);
         resolve();
-      }, 6000);
+      }, 8000);
 
       // Resolve early if all open before timeout
       const origResolve = resolve;
@@ -559,8 +559,8 @@ export function useTransferSession() {
           try {
             const warmup = new Uint8Array(64 * 1024);
             new DataView(warmup.buffer).setUint32(0, 0xFFFFFFFF);
-            for (let w = 0; w < 20; w++) {
-              if (dc.bufferedAmount > 2 * 1024 * 1024) break;
+            for (let w = 0; w < 8; w++) {
+              if (dc.bufferedAmount > 1 * 1024 * 1024) break;
               dc.send(warmup.buffer);
             }
             console.log(`[LANE ${slot}] Warm-up sent`);
@@ -900,13 +900,26 @@ export function useTransferSession() {
           }
 
           // 3. Multi-channel pump: distributes packets across ALL open data channels
-          //    (primary + up to 3 extra lanes) for 2-4x throughput
+          //    (primary + up to 7 extra lanes) for 4-8x throughput
           if (packets.length > 0) {
+            // Helper: total bytes still in SCTP send buffers (not yet on the wire)
+            const getTotalBuffered = (): number => {
+              let total = 0;
+              const primary = primaryDcRef.current;
+              if (primary && primary.readyState === 'open') total += primary.bufferedAmount;
+              for (const dc of extraDcsRef.current) {
+                if (dc && dc.readyState === 'open') total += dc.bufferedAmount;
+              }
+              return total;
+            };
+
             await multiPumpSend(
               packets,
               (idx: number) => {
                 totalSentRef.current += chunkSizes[idx];
-                updateProgressRef(totalSentRef.current, totalBatchSize);
+                // Report "delivered" bytes (sent minus still-buffered) for accurate progress
+                const delivered = Math.max(0, totalSentRef.current - getTotalBuffered());
+                updateProgressRef(delivered, totalBatchSize);
               },
               isCancelledRef
             );
