@@ -79,6 +79,9 @@ export function useTransferSession() {
   const isCancelledRef = useRef(false);
   const handleCancelRef = useRef<(isInitiator?: boolean) => void>(null);
 
+  // Receiver-ready handshake: sender waits for this before pumping data
+  const receiverReadyResolveRef = useRef<(() => void) | null>(null);
+
   // --- Mobile stream download refs ---
   const streamWriterRef = useRef<StreamWriter | null>(null);
 
@@ -302,6 +305,11 @@ export function useTransferSession() {
           }
         }
 
+        // Signal sender that we're ready to receive data
+        try {
+          sendDataRef.current(JSON.stringify({ type: 'receiver-ready' }));
+          console.log('[RECEIVER] Sent receiver-ready signal');
+        } catch {}
 
       } else if (message.type === 'file-start') {
         setCurrentFileIndex(message.index);
@@ -344,6 +352,13 @@ export function useTransferSession() {
         // SENDER receives this: peer tells us which chunks they already have
         console.log(`[RESUME] Peer has ${message.completedChunks?.length || 0} completed chunks`);
         peerCompletedChunksRef.current = new Set(message.completedChunks || []);
+      } else if (message.type === 'receiver-ready') {
+        // SENDER receives this: receiver's file writer is open, safe to pump data
+        console.log('[SENDER] Received receiver-ready signal');
+        if (receiverReadyResolveRef.current) {
+          receiverReadyResolveRef.current();
+          receiverReadyResolveRef.current = null;
+        }
       } else if (message.type === 'ack') {
         // SENDER receives this: receiver pacing acknowledgment
         // Fix #5: Only update pacing ref — do NOT overwrite sender's local progress
@@ -583,9 +598,9 @@ export function useTransferSession() {
           console.log(`[LANE ${slot}] Data channel opened`);
           // SCTP warm-up on this lane — ramp congestion window
           try {
-            const warmup = new Uint8Array(64 * 1024);
+            const warmup = new Uint8Array(128 * 1024);
             new DataView(warmup.buffer).setUint32(0, 0xFFFFFFFF);
-            for (let w = 0; w < 8; w++) {
+            for (let w = 0; w < 5; w++) {
               if (dc.bufferedAmount > 1 * 1024 * 1024) break;
               dc.send(warmup.buffer);
             }
@@ -878,7 +893,23 @@ export function useTransferSession() {
       await retrySend(() => send(JSON.stringify({ type: 'batch-metadata', files: filesToSend.map(f => ({ name: f.name, size: f.size })) })));
       const totalBatchSize = filesToSend.reduce((acc, f) => acc + f.size, 0);
 
-      // Open extra data lanes (3 more PeerConnections) for parallel throughput
+      // Wait for receiver to confirm file writer is open (file picker resolved)
+      // This prevents flooding data before the receiver can write to disk
+      console.log('[SENDER] Waiting for receiver-ready...');
+      await new Promise<void>((resolve) => {
+        receiverReadyResolveRef.current = resolve;
+        // Timeout: don't wait forever (receiver might not support handshake)
+        setTimeout(() => {
+          if (receiverReadyResolveRef.current) {
+            console.warn('[SENDER] receiver-ready timeout — proceeding anyway');
+            receiverReadyResolveRef.current = null;
+            resolve();
+          }
+        }, 30000);
+      });
+      console.log('[SENDER] Receiver ready — opening lanes');
+
+      // Open extra data lanes (15 more PeerConnections) for parallel throughput
       // Waits for channels to open + sends warm-up packets automatically
       await openExtraLanes();
 
@@ -907,7 +938,8 @@ export function useTransferSession() {
           if (isCancelledRef.current) break;
 
           // 1. Read up to 8MB from disk in one await (~128 chunks at 64KB each)
-          const batch = await readChunkBatch(file, fileId, offset, chunkId, 8 * 1024 * 1024);
+          // 1. Read up to 16MB from disk in one await (~128 chunks at 128KB each)
+          const batch = await readChunkBatch(file, fileId, offset, chunkId, 16 * 1024 * 1024);
           
           // 2. Build all packets synchronously (no awaits)
           const packets: ArrayBuffer[] = [];
@@ -926,7 +958,7 @@ export function useTransferSession() {
           }
 
           // 3. Multi-channel pump: distributes packets across ALL open data channels
-          //    (primary + up to 7 extra lanes) for 4-8x throughput
+          //    (primary + up to 15 extra lanes) for 8-16x throughput
           if (packets.length > 0) {
             // Helper: total bytes still in SCTP send buffers (not yet on the wire)
             const getTotalBuffered = (): number => {
@@ -939,13 +971,17 @@ export function useTransferSession() {
               return total;
             };
 
+            let sentInBatch = 0;
             await multiPumpSend(
               packets,
               (idx: number) => {
                 totalSentRef.current += chunkSizes[idx];
-                // Report "delivered" bytes (sent minus still-buffered) for accurate progress
-                const delivered = Math.max(0, totalSentRef.current - getTotalBuffered());
-                updateProgressRef(delivered, totalBatchSize);
+                sentInBatch++;
+                // Throttle: only compute buffered amount every 8th chunk
+                if (sentInBatch % 8 === 0 || idx === packets.length - 1) {
+                  const delivered = Math.max(0, totalSentRef.current - getTotalBuffered());
+                  updateProgressRef(delivered, totalBatchSize);
+                }
               },
               isCancelledRef
             );

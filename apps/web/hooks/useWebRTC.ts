@@ -121,13 +121,13 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             // PMTU discovery and ramp up slow-start from initial ~4KB cwnd.
             // Uses marker 0xFFFFFFFF so the receiver ignores these packets.
             try {
-                const warmup = new Uint8Array(64 * 1024); // 64KB of zeros
+                const warmup = new Uint8Array(128 * 1024); // 128KB matching chunk size
                 new DataView(warmup.buffer).setUint32(0, 0xFFFFFFFF); // marker
-                for (let i = 0; i < 20; i++) {
+                for (let i = 0; i < 10; i++) {
                     if (dc.bufferedAmount > 2 * 1024 * 1024) break;
                     dc.send(warmup.buffer);
                 }
-                console.log('[P2P] SCTP warm-up: sent 20 × 64KB packets');
+                console.log('[P2P] SCTP warm-up: sent 10 × 128KB packets');
             } catch (e) {
                 console.warn('[P2P] SCTP warm-up failed (non-critical):', e);
             }
