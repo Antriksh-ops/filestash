@@ -452,6 +452,15 @@ export function useTransferSession() {
       streamWriterRef.current.abort();
       streamWriterRef.current = null;
     }
+    // Clean up file writer
+    if (writableRef.current) {
+      try { writableRef.current.close(); } catch { }
+      writableRef.current = null;
+    }
+    // DELETE persisted transfer state from IndexedDB so it doesn't resume
+    if (sessionId) {
+      deleteTransferState(sessionId).catch(() => {});
+    }
     setFiles([]);
     setBatchMetadata(null);
     batchMetadataRef.current = null;
@@ -460,11 +469,18 @@ export function useTransferSession() {
     transferStateRef.current = null;
     peerCompletedChunksRef.current = new Set();
     receivedSizeRef.current = 0;
+    totalSentRef.current = 0;
+    // Clear reorder buffer
+    nextExpectedChunkRef.current = 0;
+    reorderBufferRef.current = new Map();
     setProgress(0);
+    progressRef.current = 0;
     startTimeRef.current = null;
+    finishTimeRef.current = null;
     lastSpeedUpdateRef.current = 0;
     lastSpeedBytesRef.current = 0;
     currentSpeedRef.current = 0;
+    etaRef.current = null;
     setEta(null);
     setStatus('idle');
     setSessionId(null);
@@ -472,7 +488,7 @@ export function useTransferSession() {
     setError(null);
     setIsTransferStarted(false);
     window.history.pushState({}, '', window.location.pathname);
-  }, [dataChannel, sendData]);
+  }, [dataChannel, sendData, sessionId]);
 
   const togglePause = useCallback(() => {
     setIsPaused((prev) => {
@@ -575,7 +591,7 @@ export function useTransferSession() {
         let offset = 0;
         let chunkId = 0;
 
-        // Batch-pump loop: read 2MB from disk, then fire all chunks synchronously
+        // Batch-pump loop: read 2MB from disk in one await, then send chunks
         while (offset < file.size) {
           if (isCancelledRef.current) break;
 
@@ -587,7 +603,6 @@ export function useTransferSession() {
           // Single await: read up to 2MB from disk at once
           const batch = await readChunkBatch(file, fileId, offset, chunkId, 2 * 1024 * 1024);
           
-          // Synchronous pump: fire all chunks in this batch without yielding
           for (const chunk of batch.chunks) {
             if (isCancelledRef.current) break;
 
@@ -597,12 +612,19 @@ export function useTransferSession() {
               continue;
             }
 
+            // CRITICAL: check backpressure BEFORE each send.
+            // With ordered:false, overflowing the SCTP buffer throws OperationError
+            // which kills the data channel. waitForBuffer returns a pre-resolved
+            // singleton when buffer is OK (essentially free), so this is zero-cost
+            // in the fast path.
+            await waitForBufferRef.current();
+            if (isCancelledRef.current) break;
+
             // Build chunk packet: [4-byte chunkId][raw data]
             const packet = new Uint8Array(4 + chunk.data.byteLength);
             new DataView(packet.buffer).setUint32(0, chunk.chunk_id);
             packet.set(new Uint8Array(chunk.data), 4);
 
-            // Synchronous send — no await unless it actually fails
             let sent = send(packet.buffer);
             if (!sent) sent = await retrySend(() => send(packet.buffer));
             
@@ -614,10 +636,6 @@ export function useTransferSession() {
               throw new Error('Failed to send chunk after max retries. Connection lost.');
             }
           }
-
-          // After pumping all chunks in this batch, check backpressure ONCE
-          // (instead of per-chunk, saving ~31 microtask yields per 2MB batch)
-          await waitForBufferRef.current();
           
           offset = batch.nextOffset;
           chunkId = batch.nextChunkId;

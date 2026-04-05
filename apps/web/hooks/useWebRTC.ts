@@ -97,8 +97,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         dataChannelRef.current = dc;
 
         dc.binaryType = 'arraybuffer';
-        // Keep WebRTC queues lean to maximize SCTP window throughput
-        dc.bufferedAmountLowThreshold = 512 * 1024; // Wake up loop when buffer drops below 512KB
+        // Wake up send loop when buffer drops below 256KB (well under 512KB high-water)
+        dc.bufferedAmountLowThreshold = 256 * 1024;
 
         dc.onopen = () => {
             // Only update state if this is still the active channel
@@ -492,8 +492,9 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 checkWSBuffer();
             });
         }
-        // 1MB high-water mark — lean enough to avoid SCTP congestion collapse
-        const HIGH_WATER = 1024 * 1024;
+        // 512KB high-water mark — with ordered:false, exceeding the browser's SCTP
+        // buffer throws OperationError which kills the channel. Stay well under.
+        const HIGH_WATER = 512 * 1024;
 
         if (!dataChannel || dataChannel.bufferedAmount <= HIGH_WATER) return RESOLVED;
         

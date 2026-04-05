@@ -6,9 +6,9 @@
  * synchronous reader for maximum throughput.
  */
 
-// 256KB per chunk — max safe size for Safari's SCTP limit.
-// With ordered:false, larger chunks reduce per-message overhead.
-export const CHUNK_SIZE = 256 * 1024;
+// 250KB per chunk — must stay under Safari's 262,144-byte SCTP limit.
+// Packet = 250KB data + 4-byte chunkId header = 256,004 bytes (safely under limit).
+export const CHUNK_SIZE = 250 * 1024;
 
 export interface Chunk {
     chunk_id: number;
