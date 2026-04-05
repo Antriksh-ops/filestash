@@ -997,12 +997,32 @@ export function useTransferSession() {
       }
 
       if (!isCancelledRef.current && totalSentRef.current >= totalBatchSize) {
-        // Fix #11: Wait for data channel buffer to drain before declaring complete
-        // This ensures the last chunks are actually sent before we show "completed"
-        await waitForBufferRef.current();
+        // Wait for ALL channel buffers to drain (primary + extra lanes)
+        // This ensures every chunk is actually delivered before we close connections
+        console.log('[TRANSFER] All chunks queued — waiting for SCTP buffers to drain...');
+        const drainAll = async () => {
+          const maxWait = 30000; // 30s max
+          const start = Date.now();
+          while (Date.now() - start < maxWait) {
+            let totalBuffered = 0;
+            const primary = primaryDcRef.current;
+            if (primary && primary.readyState === 'open') totalBuffered += primary.bufferedAmount;
+            for (const dc of extraDcsRef.current) {
+              if (dc && dc.readyState === 'open') totalBuffered += dc.bufferedAmount;
+            }
+            if (totalBuffered === 0) {
+              console.log('[TRANSFER] All SCTP buffers drained');
+              break;
+            }
+            // Poll every 100ms
+            await new Promise(r => setTimeout(r, 100));
+          }
+        };
+        await drainAll();
+
         send(JSON.stringify({ type: 'transfer-complete' }));
-        // Small grace period to ensure the control message is flushed
-        await new Promise(r => setTimeout(r, 200));
+        // Grace period to ensure the control message is flushed
+        await new Promise(r => setTimeout(r, 500));
         setStatus('completed');
         progressRef.current = 100;
         etaRef.current = null;
