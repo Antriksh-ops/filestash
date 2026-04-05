@@ -509,7 +509,7 @@ export function useTransferSession() {
   const sendSignalingRef = useRef(sendSignaling);
   const pumpSendRef = useRef(pumpSend);
 
-  // Create extra data lanes (sender-initiated)
+  // Create extra data lanes (sender-initiated) — waits for channels to actually open
   const openExtraLanes = useCallback(async () => {
     const config = iceConfigRef.current;
     if (!config) {
@@ -517,29 +517,67 @@ export function useTransferSession() {
       return;
     }
 
-    for (let i = 0; i < EXTRA_LANES; i++) {
-      const slot = i + 1;
-      const pc = new RTCPeerConnection(config);
-      extraPcsRef.current[i] = pc;
-
-      pc.onicecandidate = (e) => {
-        if (e.candidate) {
-          sendSignalingRef.current({ candidate: e.candidate, slot });
-        }
+    let openCount = 0;
+    const laneReadyPromise = new Promise<void>((resolve) => {
+      const checkDone = () => {
+        openCount++;
+        console.log(`[LANES] ${openCount}/${EXTRA_LANES} extra lanes ready`);
+        if (openCount >= EXTRA_LANES) resolve(); // All open
       };
 
-      const dc = pc.createDataChannel(`lane-${slot}`, { ordered: false });
-      dc.binaryType = 'arraybuffer';
-      dc.bufferedAmountLowThreshold = 1 * 1024 * 1024;
-      dc.onopen = () => console.log(`[LANE ${slot}] Data channel opened`);
-      dc.onerror = (e) => console.warn(`[LANE ${slot}] Error:`, e);
-      extraDcsRef.current[i] = dc;
+      // Timeout: don't wait forever — start with whatever we have
+      const timeout = setTimeout(() => {
+        console.log(`[LANES] Timeout — proceeding with ${openCount} extra lane(s)`);
+        resolve();
+      }, 4000);
 
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      sendSignalingRef.current({ offer, slot });
-      console.log(`[LANE ${slot}] Offer sent`);
-    }
+      // Resolve early if all open before timeout
+      const origResolve = resolve;
+      const wrappedResolve = () => { clearTimeout(timeout); origResolve(); };
+
+      for (let i = 0; i < EXTRA_LANES; i++) {
+        const slot = i + 1;
+        const pc = new RTCPeerConnection(config);
+        extraPcsRef.current[i] = pc;
+
+        pc.onicecandidate = (e) => {
+          if (e.candidate) {
+            sendSignalingRef.current({ candidate: e.candidate, slot });
+          }
+        };
+
+        const dc = pc.createDataChannel(`lane-${slot}`, { ordered: false });
+        dc.binaryType = 'arraybuffer';
+        dc.bufferedAmountLowThreshold = 1 * 1024 * 1024;
+        dc.onerror = (e) => console.warn(`[LANE ${slot}] Error:`, e);
+        dc.onopen = () => {
+          console.log(`[LANE ${slot}] Data channel opened`);
+          // SCTP warm-up on this lane — ramp congestion window
+          try {
+            const warmup = new Uint8Array(64 * 1024);
+            new DataView(warmup.buffer).setUint32(0, 0xFFFFFFFF);
+            for (let w = 0; w < 20; w++) {
+              if (dc.bufferedAmount > 2 * 1024 * 1024) break;
+              dc.send(warmup.buffer);
+            }
+            console.log(`[LANE ${slot}] Warm-up sent`);
+          } catch {}
+          checkDone();
+          if (openCount >= EXTRA_LANES) wrappedResolve();
+        };
+        extraDcsRef.current[i] = dc;
+
+        // Create and send offer (don't await - send all in parallel)
+        pc.createOffer().then(offer => {
+          pc.setLocalDescription(offer).then(() => {
+            sendSignalingRef.current({ offer, slot });
+            console.log(`[LANE ${slot}] Offer sent`);
+          });
+        });
+      }
+    });
+
+    await laneReadyPromise;
   }, [iceConfigRef]);
 
   const closeExtraLanes = useCallback(() => {
@@ -554,33 +592,35 @@ export function useTransferSession() {
     pendingExtraCandidatesRef.current.clear();
   }, []);
 
-  // Multi-channel pump: round-robin across primary + extra channels
+  // Multi-channel pump: "least loaded" strategy across primary + extra channels
   const multiPumpSend = useCallback((
     packets: ArrayBuffer[],
     onChunkSent?: (index: number) => void,
     cancelledRef?: React.MutableRefObject<boolean>
   ): Promise<void> => {
-    // Gather all open data channels
-    const allChannels: RTCDataChannel[] = [];
-    if (dataChannel && dataChannel.readyState === 'open') {
-      allChannels.push(dataChannel);
-    }
-    for (const dc of extraDcsRef.current) {
-      if (dc && dc.readyState === 'open') {
-        allChannels.push(dc);
-      }
-    }
+    const HIGH_WATER = 2 * 1024 * 1024;
 
-    if (allChannels.length === 0) {
+    // Dynamically gather open channels (picks up late openers)
+    const getOpenChannels = (): RTCDataChannel[] => {
+      const channels: RTCDataChannel[] = [];
+      if (dataChannel && dataChannel.readyState === 'open') {
+        channels.push(dataChannel);
+      }
+      for (const dc of extraDcsRef.current) {
+        if (dc && dc.readyState === 'open') {
+          channels.push(dc);
+        }
+      }
+      return channels;
+    };
+
+    const initial = getOpenChannels();
+    if (initial.length === 0) {
       return Promise.reject(new Error('No data channels open'));
     }
 
-    console.log(`[PUMP] Using ${allChannels.length} channel(s)`);
-    const HIGH_WATER = 2 * 1024 * 1024;
-
     return new Promise<void>((resolve, reject) => {
       let idx = 0;
-      let robin = 0;
 
       const drainListeners = new Map<RTCDataChannel, () => void>();
 
@@ -593,28 +633,31 @@ export function useTransferSession() {
 
       const pump = () => {
         try {
+          // Refresh channel list each pump cycle (picks up late-opening lanes)
+          const channels = getOpenChannels();
+          if (channels.length === 0) { cleanup(); reject(new Error('All channels closed')); return; }
+
           while (idx < packets.length) {
             if (cancelledRef?.current) { cleanup(); resolve(); return; }
 
-            // Find a channel with room (round-robin)
-            let sent = false;
-            for (let attempt = 0; attempt < allChannels.length; attempt++) {
-              const ci = (robin + attempt) % allChannels.length;
-              const dc = allChannels[ci];
+            // "Least loaded" — pick the channel with the most room
+            let bestDc: RTCDataChannel | null = null;
+            let bestBuf = Infinity;
+            for (const dc of channels) {
               if (dc.readyState !== 'open') continue;
-              if (dc.bufferedAmount <= HIGH_WATER) {
-                dc.send(packets[idx]);
-                onChunkSent?.(idx);
-                idx++;
-                robin = (ci + 1) % allChannels.length;
-                sent = true;
-                break;
+              if (dc.bufferedAmount < bestBuf) {
+                bestBuf = dc.bufferedAmount;
+                bestDc = dc;
               }
             }
 
-            if (!sent) {
+            if (bestDc && bestBuf <= HIGH_WATER) {
+              bestDc.send(packets[idx]);
+              onChunkSent?.(idx);
+              idx++;
+            } else {
               // All channels full — wait for ANY to drain
-              for (const dc of allChannels) {
+              for (const dc of channels) {
                 if (dc.readyState !== 'open') continue;
                 if (!drainListeners.has(dc)) {
                   const listener = () => {
@@ -625,15 +668,15 @@ export function useTransferSession() {
                   dc.addEventListener('bufferedamountlow', listener);
                 }
               }
-              return; // Exit sync loop, will resume via callback
+              return; // Exit sync loop, resumes via callback
             }
           }
           cleanup();
           resolve();
         } catch (e) {
           if (e instanceof DOMException && e.name === 'OperationError') {
-            // Buffer overflow on one channel — wait for any drain
-            for (const dc of allChannels) {
+            const channels = getOpenChannels();
+            for (const dc of channels) {
               if (dc.readyState !== 'open') continue;
               if (!drainListeners.has(dc)) {
                 const listener = () => { cleanup(); pump(); };
@@ -801,9 +844,8 @@ export function useTransferSession() {
       const totalBatchSize = filesToSend.reduce((acc, f) => acc + f.size, 0);
 
       // Open extra data lanes (3 more PeerConnections) for parallel throughput
+      // Waits for channels to open + sends warm-up packets automatically
       await openExtraLanes();
-      // Wait for at least some extra lanes to connect (2s max)
-      await new Promise(r => setTimeout(r, 2000));
 
       const skipChunks = peerCompletedChunksRef.current;
       if (skipChunks.size > 0) {
