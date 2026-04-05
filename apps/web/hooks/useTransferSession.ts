@@ -93,6 +93,9 @@ export function useTransferSession() {
   const nextExpectedChunkRef = useRef(0);
   const reorderBufferRef = useRef<Map<number, ArrayBuffer>>(new Map());
 
+  // Ref to primary data channel — avoids stale closure bugs in multiPumpSend
+  const primaryDcRef = useRef<RTCDataChannel | null>(null);
+
   // Register Service Worker on mount
   useEffect(() => {
     if (needsStreamFallback()) {
@@ -593,6 +596,7 @@ export function useTransferSession() {
   }, []);
 
   // Multi-channel pump: "least loaded" strategy across primary + extra channels
+  // Uses refs (not React state) to avoid stale closure issues in long-running startTransfer
   const multiPumpSend = useCallback((
     packets: ArrayBuffer[],
     onChunkSent?: (index: number) => void,
@@ -600,11 +604,12 @@ export function useTransferSession() {
   ): Promise<void> => {
     const HIGH_WATER = 2 * 1024 * 1024;
 
-    // Dynamically gather open channels (picks up late openers)
+    // Dynamically gather open channels from REFS (not React state)
     const getOpenChannels = (): RTCDataChannel[] => {
       const channels: RTCDataChannel[] = [];
-      if (dataChannel && dataChannel.readyState === 'open') {
-        channels.push(dataChannel);
+      const primary = primaryDcRef.current;
+      if (primary && primary.readyState === 'open') {
+        channels.push(primary);
       }
       for (const dc of extraDcsRef.current) {
         if (dc && dc.readyState === 'open') {
@@ -616,8 +621,11 @@ export function useTransferSession() {
 
     const initial = getOpenChannels();
     if (initial.length === 0) {
+      console.error('[PUMP] No data channels open! primary:', primaryDcRef.current?.readyState, 'extras:', extraDcsRef.current.map(dc => dc?.readyState));
       return Promise.reject(new Error('No data channels open'));
     }
+
+    console.log(`[PUMP] Sending ${packets.length} packets across ${initial.length} channel(s)`);
 
     return new Promise<void>((resolve, reject) => {
       let idx = 0;
@@ -693,14 +701,15 @@ export function useTransferSession() {
 
       pump();
     });
-  }, [dataChannel]);
+  }, []); // No React state dependencies — uses refs only
 
   useEffect(() => {
     sendDataRef.current = sendData;
     sendSignalingRef.current = sendSignaling;
     waitForBufferRef.current = waitForBuffer;
     pumpSendRef.current = pumpSend;
-  }, [sendData, sendSignaling, waitForBuffer, pumpSend]);
+    primaryDcRef.current = dataChannel;
+  }, [sendData, sendSignaling, waitForBuffer, pumpSend, dataChannel]);
 
 
 
@@ -922,6 +931,11 @@ export function useTransferSession() {
         setEta(null);
         setProgress(100);
         releaseWakeLock();
+      }
+    } catch (err) {
+      console.error('[TRANSFER] Error during transfer:', err);
+      if (!isCancelledRef.current) {
+        setError(err instanceof Error ? err.message : 'Transfer failed');
       }
     } finally {
       isTransferringRef.current = false;
