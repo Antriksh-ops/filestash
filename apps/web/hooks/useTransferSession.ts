@@ -82,6 +82,12 @@ export function useTransferSession() {
   // Receiver-ready handshake: sender waits for this before pumping data
   const receiverReadyResolveRef = useRef<(() => void) | null>(null);
 
+  // Guard: ensure receiver completion fires exactly once
+  const receiverCompleteRef = useRef(false);
+
+  // Write queue: serializes concurrent writes from 16 channels
+  const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
+
   // --- Mobile stream download refs ---
   const streamWriterRef = useRef<StreamWriter | null>(null);
 
@@ -193,9 +199,19 @@ export function useTransferSession() {
     // --- Write to the best available target ---
     if (writableRef.current) {
       // Desktop: FileSystem Access API — seek to exact byte offset
-      // chunkId × CHUNK_SIZE gives the correct position in the file
+      // Serialize writes via queue to prevent concurrent write corruption
       const byteOffset = chunkId * CHUNK_SIZE;
-      await writableRef.current.write({ type: 'write', position: byteOffset, data: new Uint8Array(rawData) });
+      const writable = writableRef.current;
+      writeQueueRef.current = writeQueueRef.current.then(async () => {
+        try {
+          if (writable) {
+            await writable.write({ type: 'write', position: byteOffset, data: new Uint8Array(rawData) });
+          }
+        } catch (e) {
+          console.error(`[WRITE] Error writing chunk ${chunkId} at offset ${byteOffset}:`, e);
+        }
+      });
+      await writeQueueRef.current;
     } else if (streamWriterRef.current) {
       // Mobile: Service Worker stream proxy — must write in order
       // Buffer out-of-order chunks and flush sequentially
@@ -263,6 +279,8 @@ export function useTransferSession() {
         completedChunksRef.current = [];
         nextExpectedChunkRef.current = 0;
         reorderBufferRef.current = new Map();
+        receiverCompleteRef.current = false;
+        writeQueueRef.current = Promise.resolve();
         setCurrentFileIndex(0);
         setProgress(0);
         startTimeRef.current = Date.now();
@@ -375,9 +393,15 @@ export function useTransferSession() {
           updateProgressRef(receivedSizeRef.current, totalSize);
 
           // removed backwards progress sync
-          if (receivedSizeRef.current >= totalSize) {
+          if (receivedSizeRef.current >= totalSize && !receiverCompleteRef.current) {
+            // Guard: ensure this runs exactly once (16 concurrent channels can hit this)
+            receiverCompleteRef.current = true;
+
             // Check if data was written to a file stream or accumulated in memory
             const wasStreaming = !!writableRef.current || !!streamWriterRef.current;
+
+            // Wait for all queued writes to complete before closing
+            await writeQueueRef.current;
 
             finishTimeRef.current = Date.now();
             setStatus('completed');
@@ -386,7 +410,11 @@ export function useTransferSession() {
             setEta(null);
             setProgress(100);
             if (writableRef.current) {
-              await writableRef.current.close();
+              try {
+                await writableRef.current.close();
+              } catch (e) {
+                console.warn('[WRITE] Error closing writable:', e);
+              }
               writableRef.current = null;
             }
             if (streamWriterRef.current) {
@@ -397,7 +425,6 @@ export function useTransferSession() {
             if (sessionId) deleteTransferState(sessionId);
 
             // Auto-download if data was accumulated in memory (no file picker / SW stream)
-            // This handles fast transfers where the user can't react in time
             if (!wasStreaming && fileChunksMapRef.current.size > 0 && meta) {
               setTimeout(() => {
                 if (meta.files.length === 1) {
@@ -434,9 +461,9 @@ export function useTransferSession() {
                   a.click();
                   URL.revokeObjectURL(url);
                 }
-              }, 300); // Small delay to let UI update to completed state
+              }, 300);
             }
-          } else {
+          } else if (!receiverCompleteRef.current) {
             // Update transfer state for resume (debounced inside markChunkCompleted)
             if (transferStateRef.current) {
               transferStateRef.current.receivedSize = receivedSizeRef.current;
@@ -1010,6 +1037,9 @@ export function useTransferSession() {
             for (const dc of extraDcsRef.current) {
               if (dc && dc.readyState === 'open') totalBuffered += dc.bufferedAmount;
             }
+            // Update progress as buffers drain (prevents stall at ~80%)
+            const delivered = Math.max(0, totalSentRef.current - totalBuffered);
+            updateProgressRef(delivered, totalBatchSize);
             if (totalBuffered === 0) {
               console.log('[TRANSFER] All SCTP buffers drained');
               break;
