@@ -185,24 +185,48 @@ export function useTransferSession() {
     if (chunkId === 0xFFFFFFFF) return 0;
 
     const chunkSize = data.byteLength - 4;
+    const rawData = data.slice(4);
 
     // --- Write to the best available target ---
     if (writableRef.current) {
-      // Desktop: FileSystem Access API — use a view to avoid copying the entire chunk
-      const rawView = new Uint8Array(data, 4);
-      await writableRef.current.write(rawView);
+      // Desktop: FileSystem Access API — seek to exact byte offset
+      // chunkId × CHUNK_SIZE gives the correct position in the file
+      const byteOffset = chunkId * CHUNK_SIZE;
+      await writableRef.current.write({ type: 'write', position: byteOffset, data: new Uint8Array(rawData) });
     } else if (streamWriterRef.current) {
-      // Mobile: Service Worker stream proxy — needs standalone buffer for transfer
-      const rawData = data.slice(4);
-      streamWriterRef.current.write(rawData); // rawData is detached here!
-    } else {
-      // Fallback: in-memory accumulation (last resort)
-      const rawData = data.slice(4);
-      const currentIdx = currentFileIndex;
-      if (!fileChunksMapRef.current.has(currentIdx)) {
-        fileChunksMapRef.current.set(currentIdx, []);
+      // Mobile: Service Worker stream proxy — must write in order
+      // Buffer out-of-order chunks and flush sequentially
+      if (chunkId === nextExpectedChunkRef.current) {
+        streamWriterRef.current.write(rawData);
+        nextExpectedChunkRef.current++;
+        // Flush any buffered consecutive chunks
+        while (reorderBufferRef.current.has(nextExpectedChunkRef.current)) {
+          streamWriterRef.current.write(reorderBufferRef.current.get(nextExpectedChunkRef.current)!);
+          reorderBufferRef.current.delete(nextExpectedChunkRef.current);
+          nextExpectedChunkRef.current++;
+        }
+      } else {
+        // Out of order — buffer it
+        reorderBufferRef.current.set(chunkId, rawData);
       }
-      fileChunksMapRef.current.get(currentIdx)!.push(rawData);
+    } else {
+      // Fallback: in-memory accumulation — buffer by chunkId for ordered assembly later
+      if (chunkId === nextExpectedChunkRef.current) {
+        const currentIdx = currentFileIndex;
+        if (!fileChunksMapRef.current.has(currentIdx)) {
+          fileChunksMapRef.current.set(currentIdx, []);
+        }
+        fileChunksMapRef.current.get(currentIdx)!.push(rawData);
+        nextExpectedChunkRef.current++;
+        // Flush buffered
+        while (reorderBufferRef.current.has(nextExpectedChunkRef.current)) {
+          fileChunksMapRef.current.get(currentIdx)!.push(reorderBufferRef.current.get(nextExpectedChunkRef.current)!);
+          reorderBufferRef.current.delete(nextExpectedChunkRef.current);
+          nextExpectedChunkRef.current++;
+        }
+      } else {
+        reorderBufferRef.current.set(chunkId, rawData);
+      }
     }
 
     // --- Mark chunk as completed for resume ---
@@ -234,6 +258,8 @@ export function useTransferSession() {
         lastAckSentRef.current = 0;
         peerAckSizeRef.current = 0;
         completedChunksRef.current = [];
+        nextExpectedChunkRef.current = 0;
+        reorderBufferRef.current = new Map();
         setCurrentFileIndex(0);
         setProgress(0);
         startTimeRef.current = Date.now();
