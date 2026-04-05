@@ -199,19 +199,13 @@ export function useTransferSession() {
     // --- Write to the best available target ---
     if (writableRef.current) {
       // Desktop: FileSystem Access API — seek to exact byte offset
-      // Serialize writes via queue to prevent concurrent write corruption
+      // FSA stream serializes writes internally — no external queue needed
       const byteOffset = chunkId * CHUNK_SIZE;
-      const writable = writableRef.current;
-      writeQueueRef.current = writeQueueRef.current.then(async () => {
-        try {
-          if (writable) {
-            await writable.write({ type: 'write', position: byteOffset, data: new Uint8Array(rawData) });
-          }
-        } catch (e) {
-          console.error(`[WRITE] Error writing chunk ${chunkId} at offset ${byteOffset}:`, e);
-        }
-      });
-      await writeQueueRef.current;
+      try {
+        await writableRef.current.write({ type: 'write', position: byteOffset, data: new Uint8Array(rawData) });
+      } catch (e) {
+        console.error(`[WRITE] Error writing chunk ${chunkId} at offset ${byteOffset}:`, e);
+      }
     } else if (streamWriterRef.current) {
       // Mobile: Service Worker stream proxy — must write in order
       // Buffer out-of-order chunks and flush sequentially
@@ -400,8 +394,25 @@ export function useTransferSession() {
             // Check if data was written to a file stream or accumulated in memory
             const wasStreaming = !!writableRef.current || !!streamWriterRef.current;
 
-            // Wait for all queued writes to complete before closing
-            await writeQueueRef.current;
+            // Flush remaining reorder buffer to stream/memory before closing
+            // With 16 unordered channels, the buffer may have chunks that haven't been flushed yet
+            if (streamWriterRef.current && reorderBufferRef.current.size > 0) {
+              console.log(`[RECEIVER] Flushing ${reorderBufferRef.current.size} buffered chunks to stream`);
+              // Sort by chunkId and write in order
+              const sortedIds = [...reorderBufferRef.current.keys()].sort((a, b) => a - b);
+              for (const id of sortedIds) {
+                // Fill any gaps with the buffered data
+                while (nextExpectedChunkRef.current < id) {
+                  // Gap — this chunk was already written or is missing
+                  nextExpectedChunkRef.current++;
+                }
+                if (id >= nextExpectedChunkRef.current) {
+                  streamWriterRef.current.write(reorderBufferRef.current.get(id)!);
+                  nextExpectedChunkRef.current = id + 1;
+                }
+              }
+              reorderBufferRef.current.clear();
+            }
 
             finishTimeRef.current = Date.now();
             setStatus('completed');
@@ -625,9 +636,9 @@ export function useTransferSession() {
           console.log(`[LANE ${slot}] Data channel opened`);
           // SCTP warm-up on this lane — ramp congestion window
           try {
-            const warmup = new Uint8Array(128 * 1024);
+            const warmup = new Uint8Array(64 * 1024);
             new DataView(warmup.buffer).setUint32(0, 0xFFFFFFFF);
-            for (let w = 0; w < 5; w++) {
+            for (let w = 0; w < 8; w++) {
               if (dc.bufferedAmount > 1 * 1024 * 1024) break;
               dc.send(warmup.buffer);
             }

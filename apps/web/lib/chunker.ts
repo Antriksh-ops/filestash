@@ -6,10 +6,10 @@
  * synchronous reader for maximum throughput.
  */
 
-// 128KB per chunk — optimal for multi-connection WebRTC with seek-based writes.
-// Larger chunks = fewer packets, fewer disk seeks, fewer send() calls.
-// Fits well within the 256KB SCTP message limit (128KB + 4 byte header).
-export const CHUNK_SIZE = 128 * 1024;
+// 64KB per chunk — optimal for WebRTC SCTP data channels.
+// Larger chunks cause more SCTP fragmentation, smaller ones add per-packet overhead.
+// 64KB is the sweet spot for throughput across browsers.
+export const CHUNK_SIZE = 64 * 1024;
 
 export interface Chunk {
     chunk_id: number;
