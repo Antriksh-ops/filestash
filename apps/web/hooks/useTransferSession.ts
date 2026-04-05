@@ -177,6 +177,10 @@ export function useTransferSession() {
   const processChunk = useCallback(async (data: ArrayBuffer) => {
     const view = new DataView(data);
     const chunkId = view.getUint32(0);
+
+    // Ignore SCTP warm-up packets (marker = 0xFFFFFFFF)
+    if (chunkId === 0xFFFFFFFF) return 0;
+
     const chunkSize = data.byteLength - 4;
 
     // --- Write to the best available target ---
@@ -593,7 +597,7 @@ export function useTransferSession() {
         let offset = 0;
         let chunkId = 0;
 
-        // Batch-pump loop: read 4MB from disk, build packets, pump via zero-async callback
+        // Batch-pump loop: read 8MB from disk, build packets, pump via zero-async callback
         while (offset < file.size) {
           if (isCancelledRef.current) break;
 
@@ -602,8 +606,8 @@ export function useTransferSession() {
           }
           if (isCancelledRef.current) break;
 
-          // 1. Read up to 4MB from disk in one await
-          const batch = await readChunkBatch(file, fileId, offset, chunkId, 4 * 1024 * 1024);
+          // 1. Read up to 8MB from disk in one await (~128 chunks at 64KB each)
+          const batch = await readChunkBatch(file, fileId, offset, chunkId, 8 * 1024 * 1024);
           
           // 2. Build all packets synchronously (no awaits)
           const packets: ArrayBuffer[] = [];

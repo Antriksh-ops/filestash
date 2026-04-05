@@ -97,8 +97,9 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         dataChannelRef.current = dc;
 
         dc.binaryType = 'arraybuffer';
-        // Wake up send loop when buffer drops below 256KB (well under 512KB high-water)
-        dc.bufferedAmountLowThreshold = 256 * 1024;
+        // Wake up send loop when buffer drops below 1MB
+        // Keep this high so we refill the SCTP pipe ASAP after a drain
+        dc.bufferedAmountLowThreshold = 1 * 1024 * 1024;
 
         dc.onopen = () => {
             // Only update state if this is still the active channel
@@ -107,6 +108,21 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
             setChannelState('open');
             setIsRelayActive(false);
             if (relayTimeoutRef.current) clearTimeout(relayTimeoutRef.current);
+
+            // SCTP congestion window warm-up: send dummy packets to trigger
+            // PMTU discovery and ramp up slow-start from initial ~4KB cwnd.
+            // Uses marker 0xFFFFFFFF so the receiver ignores these packets.
+            try {
+                const warmup = new Uint8Array(64 * 1024); // 64KB of zeros
+                new DataView(warmup.buffer).setUint32(0, 0xFFFFFFFF); // marker
+                for (let i = 0; i < 20; i++) {
+                    if (dc.bufferedAmount > 2 * 1024 * 1024) break;
+                    dc.send(warmup.buffer);
+                }
+                console.log('[P2P] SCTP warm-up: sent 20 × 64KB packets');
+            } catch (e) {
+                console.warn('[P2P] SCTP warm-up failed (non-critical):', e);
+            }
         };
         dc.onclose = () => {
             if (dataChannelRef.current !== dc) return;
@@ -575,7 +591,10 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 return;
             }
 
-            const HIGH_WATER = 512 * 1024;
+            // 2MB high-water — keeps the SCTP pipeline full.
+            // On LAN, the congestion window grows to several MB.
+            // Starving the pipe (old 512KB) was the #1 speed bottleneck.
+            const HIGH_WATER = 2 * 1024 * 1024;
             let idx = 0;
 
             const onDrain = () => {
