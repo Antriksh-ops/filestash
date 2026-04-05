@@ -417,7 +417,7 @@ export function useTransferSession() {
   }, [updateProgressRef, sessionId, processChunk]);
 
   // --- Extra data lanes for multi-connection throughput ---
-  const EXTRA_LANES = 3; // + 1 primary = 4 total
+  const EXTRA_LANES = 7; // + 1 primary = 8 total
   const extraPcsRef = useRef<RTCPeerConnection[]>([]);
   const extraDcsRef = useRef<RTCDataChannel[]>([]);
   const pendingExtraCandidatesRef = useRef<Map<number, RTCIceCandidateInit[]>>(new Map());
@@ -532,7 +532,7 @@ export function useTransferSession() {
       const timeout = setTimeout(() => {
         console.log(`[LANES] Timeout — proceeding with ${openCount} extra lane(s)`);
         resolve();
-      }, 4000);
+      }, 6000);
 
       // Resolve early if all open before timeout
       const origResolve = resolve;
