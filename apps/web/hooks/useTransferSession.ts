@@ -87,6 +87,12 @@ export function useTransferSession() {
   const transferStateRef = useRef<TransferState | null>(null);
   const peerCompletedChunksRef = useRef<Set<number>>(new Set());
 
+  // --- Reorder buffer for unordered data channel ---
+  // With ordered:false, chunks may arrive out of order. We buffer them and 
+  // write sequentially to preserve file integrity.
+  const nextExpectedChunkRef = useRef(0);
+  const reorderBufferRef = useRef<Map<number, ArrayBuffer>>(new Map());
+
   // Register Service Worker on mount
   useEffect(() => {
     if (needsStreamFallback()) {

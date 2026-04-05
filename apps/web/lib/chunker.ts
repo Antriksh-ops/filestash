@@ -6,8 +6,9 @@
  * synchronous reader for maximum throughput.
  */
 
-// 64KB is the sweet spot for WebRTC SCTP throughput.
-export const CHUNK_SIZE = 64 * 1024;
+// 256KB per chunk — max safe size for Safari's SCTP limit.
+// With ordered:false, larger chunks reduce per-message overhead.
+export const CHUNK_SIZE = 256 * 1024;
 
 export interface Chunk {
     chunk_id: number;
