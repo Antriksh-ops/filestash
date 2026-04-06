@@ -187,6 +187,9 @@ export function useTransferSession() {
   }, []);
 
   const processChunk = useCallback(async (data: ArrayBuffer) => {
+    // Early exit if transfer already completed (prevents writes to closed streams)
+    if (receiverCompleteRef.current) return 0;
+
     const view = new DataView(data);
     const chunkId = view.getUint32(0);
 
@@ -420,6 +423,10 @@ export function useTransferSession() {
             etaRef.current = null;
             setEta(null);
             setProgress(100);
+
+            // Let in-flight writes from other channels settle before closing
+            await new Promise(r => setTimeout(r, 300));
+
             if (writableRef.current) {
               try {
                 await writableRef.current.close();
@@ -496,7 +503,7 @@ export function useTransferSession() {
   }, [updateProgressRef, sessionId, processChunk]);
 
   // --- Extra data lanes for multi-connection throughput ---
-  const EXTRA_LANES = 15; // + 1 primary = 16 total
+  const EXTRA_LANES = 3; // + 1 primary = 4 total connections (stable, ~5 MB/s)
   const extraPcsRef = useRef<RTCPeerConnection[]>([]);
   const extraDcsRef = useRef<RTCDataChannel[]>([]);
   const pendingExtraCandidatesRef = useRef<Map<number, RTCIceCandidateInit[]>>(new Map());
@@ -979,8 +986,8 @@ export function useTransferSession() {
           if (isCancelledRef.current) break;
 
           // 1. Read up to 8MB from disk in one await (~128 chunks at 64KB each)
-          // 1. Read up to 16MB from disk in one await (~128 chunks at 128KB each)
-          const batch = await readChunkBatch(file, fileId, offset, chunkId, 16 * 1024 * 1024);
+          // 1. Read up to 8MB from disk in one await
+          const batch = await readChunkBatch(file, fileId, offset, chunkId, 8 * 1024 * 1024);
           
           // 2. Build all packets synchronously (no awaits)
           const packets: ArrayBuffer[] = [];
