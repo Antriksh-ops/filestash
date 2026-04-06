@@ -105,9 +105,9 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
         dataChannelRef.current = dc;
 
         dc.binaryType = 'arraybuffer';
-        // Wake up send loop when buffer drops below 1MB
-        // Keep this high so we refill the SCTP pipe ASAP after a drain
-        dc.bufferedAmountLowThreshold = 1 * 1024 * 1024;
+        // Resume pumping when buffer drops below 256KB
+        // Gap between HIGH_WATER (2MB) and this keeps 1.75MB continuously in-flight
+        dc.bufferedAmountLowThreshold = 256 * 1024;
 
         dc.onopen = () => {
             // Only update state if this is still the active channel
@@ -522,9 +522,8 @@ export function useWebRTC({ sessionId, isSender, onDataChannelMessage, onConnect
                 checkWSBuffer();
             });
         }
-        // 512KB high-water mark — with ordered:false, exceeding the browser's SCTP
-        // buffer throws OperationError which kills the channel. Stay well under.
-        const HIGH_WATER = 512 * 1024;
+        // 2MB high-water mark — matches multi-channel pump threshold
+        const HIGH_WATER = 2 * 1024 * 1024;
 
         if (!dataChannel || dataChannel.bufferedAmount <= HIGH_WATER) return RESOLVED;
         

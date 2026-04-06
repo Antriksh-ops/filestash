@@ -704,7 +704,7 @@ export function useTransferSession() {
 
         const dc = pc.createDataChannel(`lane-${slot}`, { ordered: false });
         dc.binaryType = 'arraybuffer';
-        dc.bufferedAmountLowThreshold = 1 * 1024 * 1024;
+        dc.bufferedAmountLowThreshold = 256 * 1024;
         dc.onerror = (e) => console.warn(`[LANE ${slot}] Error:`, e);
         dc.onopen = () => {
           console.log(`[LANE ${slot}] Data channel opened`);
@@ -755,8 +755,9 @@ export function useTransferSession() {
     onChunkSent?: (index: number) => void,
     cancelledRef?: React.MutableRefObject<boolean>
   ): Promise<void> => {
-    // Keep buffer small so drain completes quickly — avoids timeout + data loss
-    const HIGH_WATER = 1 * 1024 * 1024;
+    // 2MB HIGH_WATER + 256KB low threshold = 1.75MB of data continuously in flight
+    // per channel. 4 channels × 2MB = 8MB max buffered. Drains in ~4s at 2 MB/s.
+    const HIGH_WATER = 2 * 1024 * 1024;
 
     // Dynamically gather open channels from REFS (not React state)
     const getOpenChannels = (): RTCDataChannel[] => {
@@ -1093,8 +1094,8 @@ export function useTransferSession() {
               (idx: number) => {
                 totalSentRef.current += chunkSizes[idx];
                 sentInBatch++;
-                // Throttle: only compute buffered amount every 8th chunk
-                if (sentInBatch % 8 === 0 || idx === packets.length - 1) {
+                // Throttle: only compute buffered amount every 16th chunk
+                if (sentInBatch % 16 === 0 || idx === packets.length - 1) {
                   const delivered = Math.max(0, totalSentRef.current - getTotalBuffered());
                   updateProgressRef(delivered, totalBatchSize);
                 }
