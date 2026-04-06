@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useWebRTC } from './useWebRTC';
 import { readChunkBatch, CHUNK_SIZE } from '../lib/chunker';
 import { CONFIG } from '../lib/config';
-import { saveTransferState, getTransferState, deleteTransferState, markChunkCompleted, flushPendingSave, type TransferState } from '../lib/db';
+import { saveTransferState, getTransferState, deleteTransferState, updateTransferProgress, flushPendingSave, type TransferState } from '../lib/db';
 import { registerStreamSW, needsStreamFallback, isStreamReady, createStreamDownload } from '../lib/streamSaver';
 import * as fflate from 'fflate';
 
@@ -56,14 +56,14 @@ export function useTransferSession() {
   const receivedSizeRef = useRef(0);
   const startTimeRef = useRef<number | null>(null);
   const finishTimeRef = useRef<number | null>(null);
-  
+
   // Storage and sliding window pacing refs
   const lastAckSentRef = useRef(0);
   const peerAckSizeRef = useRef(0);
   const progressRef = useRef(0);
   const etaRef = useRef<string | null>(null);
   const totalSizeRef = useRef(0);
-  
+
   // Real-time speed calculation refs
   const lastSpeedUpdateRef = useRef(0);
   const lastSpeedBytesRef = useRef(0);
@@ -92,7 +92,8 @@ export function useTransferSession() {
   const streamWriterRef = useRef<StreamWriter | null>(null);
 
   // --- Chunk-level resume refs ---
-  const completedChunksRef = useRef<boolean[]>([]);
+  const completedChunksRef = useRef<Set<number>>(new Set());
+  const highWaterChunkRef = useRef(0); // Highest sequential chunkId received
   const transferStateRef = useRef<TransferState | null>(null);
   const peerCompletedChunksRef = useRef<Set<number>>(new Set());
 
@@ -148,17 +149,17 @@ export function useTransferSession() {
     }
 
     const elapsedMs = now - lastSpeedUpdateRef.current;
-    
+
     // Update speed estimate every 500ms
     if (elapsedMs >= 500) {
       const bytesSinceLast = Math.max(0, current - lastSpeedBytesRef.current);
       const instantSpeed = bytesSinceLast / (elapsedMs / 1000);
-      
+
       // Smooth the speed reading slightly (70% new, 30% old)
-      const smoothedSpeed = currentSpeedRef.current === 0 ? 
-          instantSpeed : 
-          (instantSpeed * 0.7) + (currentSpeedRef.current * 0.3);
-          
+      const smoothedSpeed = currentSpeedRef.current === 0 ?
+        instantSpeed :
+        (instantSpeed * 0.7) + (currentSpeedRef.current * 0.3);
+
       currentSpeedRef.current = smoothedSpeed;
       lastSpeedUpdateRef.current = now;
       lastSpeedBytesRef.current = current;
@@ -243,13 +244,10 @@ export function useTransferSession() {
     }
 
     // --- Mark chunk as completed for resume ---
-    completedChunksRef.current[chunkId] = true;
+    completedChunksRef.current.add(chunkId);
+    if (chunkId > highWaterChunkRef.current) highWaterChunkRef.current = chunkId;
     if (transferStateRef.current) {
-      markChunkCompleted(
-        transferStateRef.current.sessionId,
-        chunkId,
-        transferStateRef.current
-      );
+      updateTransferProgress(transferStateRef.current, receivedSizeRef.current + chunkSize, highWaterChunkRef.current);
     }
 
     receivedSizeRef.current += chunkSize;
@@ -270,7 +268,8 @@ export function useTransferSession() {
         receivedSizeRef.current = 0;
         lastAckSentRef.current = 0;
         peerAckSizeRef.current = 0;
-        completedChunksRef.current = [];
+        completedChunksRef.current = new Set();
+        highWaterChunkRef.current = 0;
         nextExpectedChunkRef.current = 0;
         reorderBufferRef.current = new Map();
         chunkStoreRef.current = new Map();
@@ -293,7 +292,7 @@ export function useTransferSession() {
           lastUpdate: Date.now(),
           status: 'active',
           totalChunks: estChunks,
-          completedChunks: [],
+          highWaterChunk: 0,
         };
 
         // Try FileSystem Access API first (desktop)
@@ -313,6 +312,11 @@ export function useTransferSession() {
         // fails to intercept the fetch, causing Next.js to serve HTML as the file.
         // In-memory blob download works reliably on all browsers for files up to ~500MB.
         if (!gotWritable) {
+          // Warn for large files on Safari/mobile (in-memory limit ~500MB)
+          const fileSize = message.files.reduce((a: number, f: { size: number }) => a + f.size, 0);
+          if (fileSize > 500 * 1024 * 1024) {
+            console.warn(`[RECEIVER] Large file (${(fileSize / 1024 / 1024 / 1024).toFixed(1)}GB) without FSA — may exceed memory`);
+          }
           console.log('[RECEIVER] Using in-memory accumulation → blob download');
         }
 
@@ -320,7 +324,7 @@ export function useTransferSession() {
         try {
           sendDataRef.current(JSON.stringify({ type: 'receiver-ready' }));
           console.log('[RECEIVER] Sent receiver-ready signal');
-        } catch {}
+        } catch { }
 
       } else if (message.type === 'file-start') {
         setCurrentFileIndex(message.index);
@@ -361,8 +365,12 @@ export function useTransferSession() {
         setStatus('idle');
       } else if (message.type === 'resume-state') {
         // SENDER receives this: peer tells us which chunks they already have
-        console.log(`[RESUME] Peer has ${message.completedChunks?.length || 0} completed chunks`);
-        peerCompletedChunksRef.current = new Set(message.completedChunks || []);
+        // highWaterChunk = highest sequential chunkId already received
+        const hwc = message.highWaterChunk || 0;
+        console.log(`[RESUME] Peer has chunks 0..${hwc} (receivedSize=${message.receivedSize || 0})`);
+        const skipSet = new Set<number>();
+        for (let i = 0; i <= hwc; i++) skipSet.add(i);
+        peerCompletedChunksRef.current = skipSet;
       } else if (message.type === 'receiver-ready') {
         // SENDER receives this: receiver's file writer is open, safe to pump data
         console.log('[SENDER] Received receiver-ready signal');
@@ -383,14 +391,14 @@ export function useTransferSession() {
         if (!receiverCompleteRef.current) {
           // Wait briefly for any remaining in-flight chunks to arrive
           await new Promise(r => setTimeout(r, 1500));
-          
+
           if (!receiverCompleteRef.current) {
             console.log('[RECEIVER] Force-completing with available chunks');
             receiverCompleteRef.current = true;
-            
+
             const wasStreaming = !!writableRef.current || !!streamWriterRef.current;
             const meta = batchMetadataRef.current;
-            
+
             finishTimeRef.current = Date.now();
             setStatus('completed');
             progressRef.current = 100;
@@ -399,7 +407,7 @@ export function useTransferSession() {
             setProgress(100);
 
             if (writableRef.current) {
-              try { await writableRef.current.close(); } catch {}
+              try { await writableRef.current.close(); } catch { }
               writableRef.current = null;
             }
             if (streamWriterRef.current) {
@@ -435,7 +443,7 @@ export function useTransferSession() {
                     a.click();
                     setTimeout(() => {
                       URL.revokeObjectURL(url);
-                      try { document.body.removeChild(a); } catch {}
+                      try { document.body.removeChild(a); } catch { }
                     }, 1000);
                   }
                   chunkStoreRef.current.clear();
@@ -539,7 +547,7 @@ export function useTransferSession() {
                       a.click();
                       setTimeout(() => {
                         URL.revokeObjectURL(url);
-                        try { document.body.removeChild(a); } catch {}
+                        try { document.body.removeChild(a); } catch { }
                       }, 1000);
                     }
                   }
@@ -559,7 +567,7 @@ export function useTransferSession() {
               lastAckSentRef.current = receivedSizeRef.current;
               try {
                 sendDataRef.current(JSON.stringify({ type: 'ack', receivedSize: receivedSizeRef.current }));
-              } catch {}
+              } catch { }
             }
           }
         }
@@ -717,7 +725,7 @@ export function useTransferSession() {
               dc.send(warmup.buffer);
             }
             console.log(`[LANE ${slot}] Warm-up sent`);
-          } catch {}
+          } catch { }
           checkDone();
           if (openCount >= EXTRA_LANES) wrappedResolve();
         };
@@ -738,10 +746,10 @@ export function useTransferSession() {
 
   const closeExtraLanes = useCallback(() => {
     for (const dc of extraDcsRef.current) {
-      try { dc?.close(); } catch {}
+      try { dc?.close(); } catch { }
     }
     for (const pc of extraPcsRef.current) {
-      try { pc?.close(); } catch {}
+      try { pc?.close(); } catch { }
     }
     extraDcsRef.current = [];
     extraPcsRef.current = [];
@@ -889,13 +897,14 @@ export function useTransferSession() {
     }
     // DELETE persisted transfer state from IndexedDB so it doesn't resume
     if (sessionId) {
-      deleteTransferState(sessionId).catch(() => {});
+      deleteTransferState(sessionId).catch(() => { });
     }
     setFiles([]);
     setBatchMetadata(null);
     batchMetadataRef.current = null;
     fileChunksMapRef.current = new Map();
-    completedChunksRef.current = [];
+    completedChunksRef.current = new Set();
+    highWaterChunkRef.current = 0;
     transferStateRef.current = null;
     peerCompletedChunksRef.current = new Set();
     receivedSizeRef.current = 0;
@@ -942,14 +951,14 @@ export function useTransferSession() {
       if (sid) {
         if (!sessionId) {
           const savedState = await getTransferState(sid);
-          if (savedState && savedState.status === 'active' && savedState.completedChunks?.length > 0) {
-            console.log(`[RESUME] Found saved state for ${sid}: ${savedState.completedChunks.filter(Boolean).length} chunks completed`);
+          if (savedState && savedState.status === 'active' && (savedState.highWaterChunk > 0 || savedState.receivedSize > 0)) {
+            console.log(`[RESUME] Found saved state for ${sid}: hwChunk=${savedState.highWaterChunk}, received=${savedState.receivedSize}`);
             setRole('receiver');
             setSessionId(sid);
             setBatchMetadata({ files: savedState.files, sessionId: sid });
             batchMetadataRef.current = { files: savedState.files, sessionId: sid };
             receivedSizeRef.current = savedState.receivedSize;
-            completedChunksRef.current = savedState.completedChunks;
+            highWaterChunkRef.current = savedState.highWaterChunk;
             transferStateRef.current = savedState;
             setStatus('receiving');
           } else if (files.length === 0) {
@@ -965,21 +974,14 @@ export function useTransferSession() {
 
   // --- Resume: send our completed chunks to sender when channel opens ---
   useEffect(() => {
-    if (channelState === 'open' && status === 'receiving' && completedChunksRef.current.length > 0) {
-      // Build list of completed chunk IDs to send to sender
-      const completedIds: number[] = [];
-      completedChunksRef.current.forEach((val, idx) => {
-        if (val) completedIds.push(idx);
-      });
-
-      if (completedIds.length > 0) {
-        console.log(`[RESUME] Sending resume-state with ${completedIds.length} completed chunks`);
-        sendDataRef.current(JSON.stringify({
-          type: 'resume-state',
-          completedChunks: completedIds,
-          receivedSize: receivedSizeRef.current,
-        }));
-      }
+    if (channelState === 'open' && status === 'receiving' && highWaterChunkRef.current > 0) {
+      // Send resume info: sender can skip chunks up to highWaterChunk
+      console.log(`[RESUME] Sending resume-state: hwChunk=${highWaterChunkRef.current}, received=${receivedSizeRef.current}`);
+      sendDataRef.current(JSON.stringify({
+        type: 'resume-state',
+        highWaterChunk: highWaterChunkRef.current,
+        receivedSize: receivedSizeRef.current,
+      }));
     }
   }, [channelState, status]);
 
@@ -1057,7 +1059,7 @@ export function useTransferSession() {
           // 1. Read up to 8MB from disk in one await (~128 chunks at 64KB each)
           // 1. Read up to 8MB from disk in one await
           const batch = await readChunkBatch(file, fileId, offset, chunkId, 8 * 1024 * 1024);
-          
+
           // 2. Build all packets synchronously (no awaits)
           const packets: ArrayBuffer[] = [];
           const chunkSizes: number[] = [];
@@ -1103,7 +1105,7 @@ export function useTransferSession() {
               isCancelledRef
             );
           }
-          
+
           offset = batch.nextOffset;
           chunkId = batch.nextChunkId;
         }
@@ -1170,7 +1172,8 @@ export function useTransferSession() {
       setBatchMetadata(null);
       batchMetadataRef.current = null;
       fileChunksMapRef.current = new Map();
-      completedChunksRef.current = [];
+      completedChunksRef.current = new Set();
+      highWaterChunkRef.current = 0;
       transferStateRef.current = null;
       peerCompletedChunksRef.current = new Set();
       receivedSizeRef.current = 0;
@@ -1260,7 +1263,7 @@ export function useTransferSession() {
     for (let i = 0; i < batchMetadata.files.length; i++) {
       const chunks = fileChunksMapRef.current.get(i);
       if (!chunks || chunks.length === 0) continue;
-      
+
       const totalLen = chunks.reduce((acc, c) => acc + c.byteLength, 0);
       const buf = new Uint8Array(totalLen);
       let offset = 0;
@@ -1296,7 +1299,7 @@ export function useTransferSession() {
             return;
           }
         }
-      } catch {}
+      } catch { }
       setError('Invalid or expired 4-digit code');
     } else if (joinCode.length === 6) {
       const code = joinCode.trim().toUpperCase();
