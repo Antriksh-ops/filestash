@@ -85,6 +85,9 @@ export function useTransferSession() {
   // Guard: ensure receiver completion fires exactly once
   const receiverCompleteRef = useRef(false);
 
+  // Signal from sender that all data has been sent
+  const transferCompleteSignalRef = useRef(false);
+
   // Write queue: serializes concurrent writes from 16 channels
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -187,7 +190,9 @@ export function useTransferSession() {
   }, []);
 
   const processChunk = useCallback(async (data: ArrayBuffer) => {
-    // Early exit if transfer already completed (prevents writes to closed streams)
+    // Only skip if we've FULLY finalized (file saved and streams closed)
+    // Do NOT skip based on receiverCompleteRef — chunks may still be arriving
+    // from multiple data channels after the byte count hits totalSize
     if (receiverCompleteRef.current) return 0;
 
     const view = new DataView(data);
@@ -259,6 +264,161 @@ export function useTransferSession() {
     return chunkSize;
   }, [currentFileIndex]);
 
+  // Finalize receiver: flush reorder buffer, close streams, trigger download
+  // This is called ONLY when the sender's transfer-complete signal arrives,
+  // ensuring all chunks have been sent before we close anything.
+  const finalizeReceiver = useCallback(async () => {
+    if (receiverCompleteRef.current) return; // Already finalized
+    receiverCompleteRef.current = true;
+
+    const meta = batchMetadataRef.current;
+    if (!meta) return;
+
+    const totalSize = meta.files.reduce((acc: number, f: any) => acc + f.size, 0);
+    const expectedChunks = Math.ceil(totalSize / CHUNK_SIZE);
+
+    // Wait for ALL in-flight chunks to arrive (max 10s safety timeout)
+    // Chunks may still be in browser SCTP buffers or event loop queues
+    const drainStart = Date.now();
+    const DRAIN_TIMEOUT = 10000;
+    while (receivedSizeRef.current < totalSize && Date.now() - drainStart < DRAIN_TIMEOUT) {
+      console.log(`[RECEIVER] Waiting for remaining data: ${receivedSizeRef.current}/${totalSize} bytes`);
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    if (receivedSizeRef.current < totalSize) {
+      console.warn(`[RECEIVER] Drain timeout — received ${receivedSizeRef.current}/${totalSize} bytes. Proceeding with what we have.`);
+    }
+
+    // Check if data was written to a file stream or accumulated in memory
+    const wasStreaming = !!writableRef.current || !!streamWriterRef.current;
+
+    // Flush remaining reorder buffer to stream/memory before closing
+    if (streamWriterRef.current && reorderBufferRef.current.size > 0) {
+      console.log(`[RECEIVER] Flushing ${reorderBufferRef.current.size} buffered chunks to stream`);
+      const sortedIds = [...reorderBufferRef.current.keys()].sort((a, b) => a - b);
+      for (const id of sortedIds) {
+        while (nextExpectedChunkRef.current < id) {
+          nextExpectedChunkRef.current++;
+        }
+        if (id >= nextExpectedChunkRef.current) {
+          streamWriterRef.current.write(reorderBufferRef.current.get(id)!);
+          nextExpectedChunkRef.current = id + 1;
+        }
+      }
+      reorderBufferRef.current.clear();
+    }
+
+    finishTimeRef.current = Date.now();
+    setStatus('completed');
+    progressRef.current = 100;
+    etaRef.current = null;
+    setEta(null);
+    setProgress(100);
+
+    // Let in-flight writes from other channels settle before closing
+    await new Promise(r => setTimeout(r, 500));
+
+    if (writableRef.current) {
+      try {
+        await writableRef.current.close();
+      } catch (e) {
+        console.warn('[WRITE] Error closing writable:', e);
+      }
+      writableRef.current = null;
+    }
+    if (streamWriterRef.current) {
+      streamWriterRef.current.close();
+      streamWriterRef.current = null;
+    }
+    await flushPendingSave();
+    if (sessionId) deleteTransferState(sessionId);
+
+    // Auto-download if data was accumulated in memory (no file picker / SW stream)
+    if (!wasStreaming && meta) {
+      // Flush any remaining reorder buffer into fileChunksMap
+      if (reorderBufferRef.current.size > 0) {
+        console.log(`[RECEIVER] Flushing ${reorderBufferRef.current.size} buffered chunks to memory`);
+        const currentIdx = 0;
+        if (!fileChunksMapRef.current.has(currentIdx)) {
+          fileChunksMapRef.current.set(currentIdx, []);
+        }
+        const sortedIds = [...reorderBufferRef.current.keys()].sort((a, b) => a - b);
+        for (const id of sortedIds) {
+          fileChunksMapRef.current.get(currentIdx)!.push(reorderBufferRef.current.get(id)!);
+        }
+        reorderBufferRef.current.clear();
+      }
+
+      if (fileChunksMapRef.current.size > 0) {
+        // Verify data integrity before downloading
+        const receivedTotal = Array.from(fileChunksMapRef.current.values()).reduce(
+          (acc, chunks) => acc + chunks.reduce((a, c) => a + c.byteLength, 0), 0
+        );
+        console.log(`[RECEIVER] In-memory data: ${receivedTotal}/${totalSize} bytes (${((receivedTotal/totalSize)*100).toFixed(1)}%)`);
+
+        setTimeout(() => {
+          if (meta.files.length === 1) {
+            const chunks = fileChunksMapRef.current.get(0);
+            if (chunks && chunks.length > 0) {
+              const ext = meta.files[0].name.split('.').pop()?.toLowerCase() || '';
+              const mimeMap: Record<string, string> = {
+                'pdf': 'application/pdf', 'mp4': 'video/mp4', 'mp3': 'audio/mpeg',
+                'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+                'gif': 'image/gif', 'webp': 'image/webp', 'zip': 'application/zip',
+                'doc': 'application/msword', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'txt': 'text/plain', 'csv': 'text/csv', 'json': 'application/json',
+                'mov': 'video/quicktime', 'avi': 'video/x-msvideo', 'mkv': 'video/x-matroska',
+              };
+              const mimeType = mimeMap[ext] || 'application/octet-stream';
+              const blob = new Blob(chunks, { type: mimeType });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = meta.files[0].name;
+              document.body.appendChild(a);
+              a.click();
+              setTimeout(() => {
+                URL.revokeObjectURL(url);
+                try { document.body.removeChild(a); } catch {}
+              }, 1000);
+            }
+          } else if (meta.files.length > 1) {
+            const zipData: Record<string, Uint8Array> = {};
+            for (let i = 0; i < meta.files.length; i++) {
+              const chunks = fileChunksMapRef.current.get(i);
+              if (!chunks || chunks.length === 0) continue;
+              const totalLen = chunks.reduce((acc, c) => acc + c.byteLength, 0);
+              const buf = new Uint8Array(totalLen);
+              let offset = 0;
+              for (const c of chunks) {
+                buf.set(new Uint8Array(c), offset);
+                offset += c.byteLength;
+              }
+              zipData[meta.files[i].name] = buf;
+            }
+            const zipped = fflate.zipSync(zipData, { level: 0 });
+            const blob = new Blob([zipped as any], { type: 'application/zip' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'filedrop-files.zip';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => {
+              URL.revokeObjectURL(url);
+              try { document.body.removeChild(a); } catch {}
+            }, 1000);
+          }
+        }, 300);
+      }
+    }
+  }, [sessionId]);
+
+  // Keep a ref to finalizeReceiver so the data channel message handler can call it
+  const finalizeReceiverRef = useRef(finalizeReceiver);
+  useEffect(() => { finalizeReceiverRef.current = finalizeReceiver; }, [finalizeReceiver]);
+
   const handleRawMessage = useCallback(async (data: string | ArrayBuffer) => {
     if (typeof data === 'string') {
       let message;
@@ -277,6 +437,7 @@ export function useTransferSession() {
         nextExpectedChunkRef.current = 0;
         reorderBufferRef.current = new Map();
         receiverCompleteRef.current = false;
+        transferCompleteSignalRef.current = false;
         writeQueueRef.current = Promise.resolve();
         setCurrentFileIndex(0);
         setProgress(0);
@@ -286,7 +447,6 @@ export function useTransferSession() {
 
         // Initialize transfer state for resume tracking
         const totalSize = message.files.reduce((a: number, f: { size: number }) => a + f.size, 0);
-        // Estimate total chunks (we'll refine as we receive)
         const estChunks = Math.ceil(totalSize / CHUNK_SIZE);
         transferStateRef.current = {
           sessionId: sessionId || '',
@@ -311,9 +471,6 @@ export function useTransferSession() {
         }
 
         // On Safari/mobile: fall through to in-memory accumulation.
-        // StreamSaver (SW-based streaming) is unreliable on Safari — the SW often
-        // fails to intercept the fetch, causing Next.js to serve HTML as the file.
-        // In-memory blob download works reliably on all browsers for files up to ~500MB.
         if (!gotWritable) {
           console.log('[RECEIVER] Using in-memory accumulation → blob download');
         }
@@ -351,6 +508,12 @@ export function useTransferSession() {
             }
           }
         }
+      } else if (message.type === 'transfer-complete') {
+        // RECEIVER: sender has finished sending all data.
+        // Now we can safely finalize (flush buffers, close streams, download).
+        console.log('[RECEIVER] Received transfer-complete signal from sender');
+        transferCompleteSignalRef.current = true;
+        finalizeReceiverRef.current();
       } else if (message.type === 'cancel') {
         // Clean up stream writer on cancel
         if (streamWriterRef.current) {
@@ -374,8 +537,6 @@ export function useTransferSession() {
         }
       } else if (message.type === 'ack') {
         // SENDER receives this: receiver pacing acknowledgment
-        // Fix #5: Only update pacing ref — do NOT overwrite sender's local progress
-        // (sender uses totalSentRef for its own progress bar)
         peerAckSizeRef.current = message.receivedSize;
       }
     } else if (data instanceof ArrayBuffer) {
@@ -383,150 +544,21 @@ export function useTransferSession() {
         await processChunk(data);
 
         const meta = batchMetadataRef.current;
-        if (meta && startTimeRef.current) {
+        if (meta && startTimeRef.current && !receiverCompleteRef.current) {
           const totalSize = meta.files.reduce((acc: number, f: any) => acc + f.size, 0);
           updateProgressRef(receivedSizeRef.current, totalSize);
 
-          // removed backwards progress sync
-          if (receivedSizeRef.current >= totalSize && !receiverCompleteRef.current) {
-            // Guard: ensure this runs exactly once (16 concurrent channels can hit this)
-            receiverCompleteRef.current = true;
+          // Update transfer state for resume (debounced inside markChunkCompleted)
+          if (transferStateRef.current) {
+            transferStateRef.current.receivedSize = receivedSizeRef.current;
+          }
 
-            // Check if data was written to a file stream or accumulated in memory
-            const wasStreaming = !!writableRef.current || !!streamWriterRef.current;
-
-            // Flush remaining reorder buffer to stream/memory before closing
-            // With 16 unordered channels, the buffer may have chunks that haven't been flushed yet
-            if (streamWriterRef.current && reorderBufferRef.current.size > 0) {
-              console.log(`[RECEIVER] Flushing ${reorderBufferRef.current.size} buffered chunks to stream`);
-              // Sort by chunkId and write in order
-              const sortedIds = [...reorderBufferRef.current.keys()].sort((a, b) => a - b);
-              for (const id of sortedIds) {
-                // Fill any gaps with the buffered data
-                while (nextExpectedChunkRef.current < id) {
-                  // Gap — this chunk was already written or is missing
-                  nextExpectedChunkRef.current++;
-                }
-                if (id >= nextExpectedChunkRef.current) {
-                  streamWriterRef.current.write(reorderBufferRef.current.get(id)!);
-                  nextExpectedChunkRef.current = id + 1;
-                }
-              }
-              reorderBufferRef.current.clear();
-            }
-
-            finishTimeRef.current = Date.now();
-            setStatus('completed');
-            progressRef.current = 100;
-            etaRef.current = null;
-            setEta(null);
-            setProgress(100);
-
-            // Let in-flight writes from other channels settle before closing
-            await new Promise(r => setTimeout(r, 300));
-
-            if (writableRef.current) {
-              try {
-                await writableRef.current.close();
-              } catch (e) {
-                console.warn('[WRITE] Error closing writable:', e);
-              }
-              writableRef.current = null;
-            }
-            if (streamWriterRef.current) {
-              streamWriterRef.current.close();
-              streamWriterRef.current = null;
-            }
-            await flushPendingSave();
-            if (sessionId) deleteTransferState(sessionId);
-
-            // Auto-download if data was accumulated in memory (no file picker / SW stream)
-            if (!wasStreaming && meta) {
-              // Flush any remaining reorder buffer into fileChunksMap
-              if (reorderBufferRef.current.size > 0) {
-                console.log(`[RECEIVER] Flushing ${reorderBufferRef.current.size} buffered chunks to memory`);
-                const currentIdx = 0; // Single file for now
-                if (!fileChunksMapRef.current.has(currentIdx)) {
-                  fileChunksMapRef.current.set(currentIdx, []);
-                }
-                const sortedIds = [...reorderBufferRef.current.keys()].sort((a, b) => a - b);
-                for (const id of sortedIds) {
-                  fileChunksMapRef.current.get(currentIdx)!.push(reorderBufferRef.current.get(id)!);
-                }
-                reorderBufferRef.current.clear();
-              }
-
-              if (fileChunksMapRef.current.size > 0) {
-                setTimeout(() => {
-                  if (meta.files.length === 1) {
-                    const chunks = fileChunksMapRef.current.get(0);
-                    if (chunks && chunks.length > 0) {
-                      // Detect MIME type from extension for proper file handling
-                      const ext = meta.files[0].name.split('.').pop()?.toLowerCase() || '';
-                      const mimeMap: Record<string, string> = {
-                        'pdf': 'application/pdf', 'mp4': 'video/mp4', 'mp3': 'audio/mpeg',
-                        'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
-                        'gif': 'image/gif', 'webp': 'image/webp', 'zip': 'application/zip',
-                        'doc': 'application/msword', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                        'txt': 'text/plain', 'csv': 'text/csv', 'json': 'application/json',
-                        'mov': 'video/quicktime', 'avi': 'video/x-msvideo', 'mkv': 'video/x-matroska',
-                      };
-                      const mimeType = mimeMap[ext] || 'application/octet-stream';
-                      const blob = new Blob(chunks, { type: mimeType });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = meta.files[0].name;
-                      document.body.appendChild(a);
-                      a.click();
-                      setTimeout(() => {
-                        URL.revokeObjectURL(url);
-                        try { document.body.removeChild(a); } catch {}
-                      }, 1000);
-                    }
-                  } else if (meta.files.length > 1) {
-                    const zipData: Record<string, Uint8Array> = {};
-                    for (let i = 0; i < meta.files.length; i++) {
-                      const chunks = fileChunksMapRef.current.get(i);
-                      if (!chunks || chunks.length === 0) continue;
-                      const totalLen = chunks.reduce((acc, c) => acc + c.byteLength, 0);
-                      const buf = new Uint8Array(totalLen);
-                      let offset = 0;
-                      for (const c of chunks) {
-                        buf.set(new Uint8Array(c), offset);
-                        offset += c.byteLength;
-                      }
-                      zipData[meta.files[i].name] = buf;
-                    }
-                    const zipped = fflate.zipSync(zipData, { level: 0 });
-                    const blob = new Blob([zipped as any], { type: 'application/zip' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'filedrop-files.zip';
-                    document.body.appendChild(a);
-                    a.click();
-                    setTimeout(() => {
-                      URL.revokeObjectURL(url);
-                      try { document.body.removeChild(a); } catch {}
-                    }, 1000);
-                  }
-                }, 300);
-              }
-            }
-          } else if (!receiverCompleteRef.current) {
-            // Update transfer state for resume (debounced inside markChunkCompleted)
-            if (transferStateRef.current) {
-              transferStateRef.current.receivedSize = receivedSizeRef.current;
-            }
-
-            // Provide sliding window ACKs back to sender every ~2.5MB
-            if (receivedSizeRef.current - lastAckSentRef.current >= 2.5 * 1024 * 1024) {
-              lastAckSentRef.current = receivedSizeRef.current;
-              try {
-                sendDataRef.current(JSON.stringify({ type: 'ack', receivedSize: receivedSizeRef.current }));
-              } catch {}
-            }
+          // Provide sliding window ACKs back to sender every ~2.5MB
+          if (receivedSizeRef.current - lastAckSentRef.current >= 2.5 * 1024 * 1024) {
+            lastAckSentRef.current = receivedSizeRef.current;
+            try {
+              sendDataRef.current(JSON.stringify({ type: 'ack', receivedSize: receivedSizeRef.current }));
+            } catch {}
           }
         }
       } catch (e) {
