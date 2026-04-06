@@ -823,10 +823,12 @@ export function useTransferSession() {
                 if (!drainListeners.has(dc)) {
                   const listener = () => {
                     cleanup();
-                    pump();
+                    pump(); // Resume loop when buffer frees or channel closes
                   };
                   drainListeners.set(dc, listener);
                   dc.addEventListener('bufferedamountlow', listener);
+                  dc.addEventListener('close', listener);
+                  dc.addEventListener('error', listener);
                 }
               }
               return; // Exit sync loop, resumes via callback
@@ -843,6 +845,7 @@ export function useTransferSession() {
                 const listener = () => { cleanup(); pump(); };
                 drainListeners.set(dc, listener);
                 dc.addEventListener('bufferedamountlow', listener);
+                dc.addEventListener('close', listener);
               }
             }
           } else {
@@ -940,7 +943,14 @@ export function useTransferSession() {
       if (sid) {
         if (!sessionId) {
           const savedState = await getTransferState(sid);
-          if (savedState && savedState.status === 'active' && savedState.completedChunks?.length > 0) {
+          
+          // Only attempt chunk resumption if the system supports saving to disk (FSA).
+          // If we rely on in-memory blobs, restarting the page wipes the RAM buffers,
+          // so we cannot resume from mid-file (which corrupts the Blob structure).
+          const hasFileSystemAccess = 'showSaveFilePicker' in window;
+          const canResumeChunks = hasFileSystemAccess && (savedState?.completedChunks?.length ?? 0) > 0;
+
+          if (savedState && savedState.status === 'active' && canResumeChunks) {
             console.log(`[RESUME] Found saved state for ${sid}: ${savedState.completedChunks.filter(Boolean).length} chunks completed`);
             setRole('receiver');
             setSessionId(sid);
