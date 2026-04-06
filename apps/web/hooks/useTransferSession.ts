@@ -310,14 +310,12 @@ export function useTransferSession() {
           }
         }
 
-        // Fallback: try Service Worker stream (mobile)
-        if (!gotWritable && needsStreamFallback() && isStreamReady() && message.files.length === 1) {
-          const writer = createStreamDownload(message.files[0].name, message.files[0].size);
-          if (writer) {
-            streamWriterRef.current = writer;
-            gotWritable = true;
-            console.log('[Mobile] Streaming download via SW for:', message.files[0].name);
-          }
+        // On Safari/mobile: fall through to in-memory accumulation.
+        // StreamSaver (SW-based streaming) is unreliable on Safari — the SW often
+        // fails to intercept the fetch, causing Next.js to serve HTML as the file.
+        // In-memory blob download works reliably on all browsers for files up to ~500MB.
+        if (!gotWritable) {
+          console.log('[RECEIVER] Using in-memory accumulation → blob download');
         }
 
         // Signal sender that we're ready to receive data
@@ -443,43 +441,78 @@ export function useTransferSession() {
             if (sessionId) deleteTransferState(sessionId);
 
             // Auto-download if data was accumulated in memory (no file picker / SW stream)
-            if (!wasStreaming && fileChunksMapRef.current.size > 0 && meta) {
-              setTimeout(() => {
-                if (meta.files.length === 1) {
-                  const chunks = fileChunksMapRef.current.get(0);
-                  if (chunks && chunks.length > 0) {
-                    const blob = new Blob(chunks, { type: 'application/octet-stream' });
+            if (!wasStreaming && meta) {
+              // Flush any remaining reorder buffer into fileChunksMap
+              if (reorderBufferRef.current.size > 0) {
+                console.log(`[RECEIVER] Flushing ${reorderBufferRef.current.size} buffered chunks to memory`);
+                const currentIdx = 0; // Single file for now
+                if (!fileChunksMapRef.current.has(currentIdx)) {
+                  fileChunksMapRef.current.set(currentIdx, []);
+                }
+                const sortedIds = [...reorderBufferRef.current.keys()].sort((a, b) => a - b);
+                for (const id of sortedIds) {
+                  fileChunksMapRef.current.get(currentIdx)!.push(reorderBufferRef.current.get(id)!);
+                }
+                reorderBufferRef.current.clear();
+              }
+
+              if (fileChunksMapRef.current.size > 0) {
+                setTimeout(() => {
+                  if (meta.files.length === 1) {
+                    const chunks = fileChunksMapRef.current.get(0);
+                    if (chunks && chunks.length > 0) {
+                      // Detect MIME type from extension for proper file handling
+                      const ext = meta.files[0].name.split('.').pop()?.toLowerCase() || '';
+                      const mimeMap: Record<string, string> = {
+                        'pdf': 'application/pdf', 'mp4': 'video/mp4', 'mp3': 'audio/mpeg',
+                        'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+                        'gif': 'image/gif', 'webp': 'image/webp', 'zip': 'application/zip',
+                        'doc': 'application/msword', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        'txt': 'text/plain', 'csv': 'text/csv', 'json': 'application/json',
+                        'mov': 'video/quicktime', 'avi': 'video/x-msvideo', 'mkv': 'video/x-matroska',
+                      };
+                      const mimeType = mimeMap[ext] || 'application/octet-stream';
+                      const blob = new Blob(chunks, { type: mimeType });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = meta.files[0].name;
+                      document.body.appendChild(a);
+                      a.click();
+                      setTimeout(() => {
+                        URL.revokeObjectURL(url);
+                        try { document.body.removeChild(a); } catch {}
+                      }, 1000);
+                    }
+                  } else if (meta.files.length > 1) {
+                    const zipData: Record<string, Uint8Array> = {};
+                    for (let i = 0; i < meta.files.length; i++) {
+                      const chunks = fileChunksMapRef.current.get(i);
+                      if (!chunks || chunks.length === 0) continue;
+                      const totalLen = chunks.reduce((acc, c) => acc + c.byteLength, 0);
+                      const buf = new Uint8Array(totalLen);
+                      let offset = 0;
+                      for (const c of chunks) {
+                        buf.set(new Uint8Array(c), offset);
+                        offset += c.byteLength;
+                      }
+                      zipData[meta.files[i].name] = buf;
+                    }
+                    const zipped = fflate.zipSync(zipData, { level: 0 });
+                    const blob = new Blob([zipped as any], { type: 'application/zip' });
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = meta.files[0].name;
+                    a.download = 'filedrop-files.zip';
+                    document.body.appendChild(a);
                     a.click();
-                    URL.revokeObjectURL(url);
+                    setTimeout(() => {
+                      URL.revokeObjectURL(url);
+                      try { document.body.removeChild(a); } catch {}
+                    }, 1000);
                   }
-                } else if (meta.files.length > 1) {
-                  const zipData: Record<string, Uint8Array> = {};
-                  for (let i = 0; i < meta.files.length; i++) {
-                    const chunks = fileChunksMapRef.current.get(i);
-                    if (!chunks || chunks.length === 0) continue;
-                    const totalLen = chunks.reduce((acc, c) => acc + c.byteLength, 0);
-                    const buf = new Uint8Array(totalLen);
-                    let offset = 0;
-                    for (const c of chunks) {
-                      buf.set(new Uint8Array(c), offset);
-                      offset += c.byteLength;
-                    }
-                    zipData[meta.files[i].name] = buf;
-                  }
-                  const zipped = fflate.zipSync(zipData, { level: 0 });
-                  const blob = new Blob([zipped as any], { type: 'application/zip' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'filedrop-files.zip';
-                  a.click();
-                  URL.revokeObjectURL(url);
-                }
-              }, 300);
+                }, 300);
+              }
             }
           } else if (!receiverCompleteRef.current) {
             // Update transfer state for resume (debounced inside markChunkCompleted)
@@ -688,7 +721,9 @@ export function useTransferSession() {
     onChunkSent?: (index: number) => void,
     cancelledRef?: React.MutableRefObject<boolean>
   ): Promise<void> => {
-    const HIGH_WATER = 2 * 1024 * 1024;
+    // Keep each channel's SCTP buffer well-fed to maintain congestion window
+    // Higher = more consistent throughput (less idle time between refills)
+    const HIGH_WATER = 4 * 1024 * 1024;
 
     // Dynamically gather open channels from REFS (not React state)
     const getOpenChannels = (): RTCDataChannel[] => {
