@@ -166,21 +166,23 @@ export function useTransferSession() {
       const pct = total > 0 ? (current / total) * 100 : 0;
       const speedMB = (smoothedSpeed / (1024 * 1024)).toFixed(2);
 
+      // Use instantSpeed (not smoothed) to detect stall — smoothed decays but never hits 0
       if (pct >= 98) {
-        // Near completion — show finalizing instead of misleading ETA
         etaRef.current = `Saving... • ${speedMB} MB/s`;
+      } else if (instantSpeed === 0 && pct > 80) {
+        etaRef.current = `Finishing... • ${speedMB} MB/s`;
+      } else if (instantSpeed === 0 && pct > 0) {
+        etaRef.current = `Stalled • 0.00 MB/s`;
       } else if (smoothedSpeed > 0) {
         const remaining = total - current;
         const timeRemaining = remaining / smoothedSpeed;
-
-        if (timeRemaining >= 0 && isFinite(timeRemaining)) {
-          const mins = Math.floor(timeRemaining / 60);
-          const secs = Math.floor(timeRemaining % 60);
+        // Cap at 99 minutes to avoid absurd displays
+        const cappedTime = Math.min(timeRemaining, 5999);
+        if (cappedTime >= 0 && isFinite(cappedTime)) {
+          const mins = Math.floor(cappedTime / 60);
+          const secs = Math.floor(cappedTime % 60);
           etaRef.current = `${mins > 0 ? `${mins}m ` : ''}${secs}s • ${speedMB} MB/s`;
         }
-      } else if (pct > 80) {
-        // Draining buffers
-        etaRef.current = `Finishing... • ${speedMB} MB/s`;
       } else {
         etaRef.current = `Stalled • 0.00 MB/s`;
       }
@@ -373,6 +375,75 @@ export function useTransferSession() {
         // Fix #5: Only update pacing ref — do NOT overwrite sender's local progress
         // (sender uses totalSentRef for its own progress bar)
         peerAckSizeRef.current = message.receivedSize;
+      } else if (message.type === 'transfer-complete') {
+        // RECEIVER receives this: sender has finished sending all data
+        // If we haven't already triggered completion, force it now
+        // (handles case where drain timed out and some chunks are still in transit)
+        console.log(`[RECEIVER] Got transfer-complete. receiverComplete=${receiverCompleteRef.current}, chunks=${chunkStoreRef.current.size}`);
+        if (!receiverCompleteRef.current) {
+          // Wait briefly for any remaining in-flight chunks to arrive
+          await new Promise(r => setTimeout(r, 1500));
+          
+          if (!receiverCompleteRef.current) {
+            console.log('[RECEIVER] Force-completing with available chunks');
+            receiverCompleteRef.current = true;
+            
+            const wasStreaming = !!writableRef.current || !!streamWriterRef.current;
+            const meta = batchMetadataRef.current;
+            
+            finishTimeRef.current = Date.now();
+            setStatus('completed');
+            progressRef.current = 100;
+            etaRef.current = null;
+            setEta(null);
+            setProgress(100);
+
+            if (writableRef.current) {
+              try { await writableRef.current.close(); } catch {}
+              writableRef.current = null;
+            }
+            if (streamWriterRef.current) {
+              streamWriterRef.current.close();
+              streamWriterRef.current = null;
+            }
+            if (sessionId) deleteTransferState(sessionId);
+
+            // Trigger blob download for in-memory path
+            if (!wasStreaming && meta) {
+              if (chunkStoreRef.current.size > 0) {
+                const sortedIds = [...chunkStoreRef.current.keys()].sort((a, b) => a - b);
+                const orderedChunks: ArrayBuffer[] = [];
+                for (const id of sortedIds) {
+                  orderedChunks.push(chunkStoreRef.current.get(id)!);
+                }
+                setTimeout(() => {
+                  if (meta.files.length === 1 && orderedChunks.length > 0) {
+                    const ext = meta.files[0].name.split('.').pop()?.toLowerCase() || '';
+                    const mimeMap: Record<string, string> = {
+                      'pdf': 'application/pdf', 'mp4': 'video/mp4', 'mp3': 'audio/mpeg',
+                      'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png',
+                      'gif': 'image/gif', 'webp': 'image/webp', 'zip': 'application/zip',
+                      'mov': 'video/quicktime', 'avi': 'video/x-msvideo', 'mkv': 'video/x-matroska',
+                    };
+                    const mimeType = mimeMap[ext] || 'application/octet-stream';
+                    const blob = new Blob(orderedChunks, { type: mimeType });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = meta.files[0].name;
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(() => {
+                      URL.revokeObjectURL(url);
+                      try { document.body.removeChild(a); } catch {}
+                    }, 1000);
+                  }
+                  chunkStoreRef.current.clear();
+                }, 300);
+              }
+            }
+          }
+        }
       }
     } else if (data instanceof ArrayBuffer) {
       try {
@@ -684,9 +755,8 @@ export function useTransferSession() {
     onChunkSent?: (index: number) => void,
     cancelledRef?: React.MutableRefObject<boolean>
   ): Promise<void> => {
-    // Keep each channel's SCTP buffer well-fed to maintain congestion window
-    // Higher = more consistent throughput (less idle time between refills)
-    const HIGH_WATER = 4 * 1024 * 1024;
+    // Keep buffer small so drain completes quickly — avoids timeout + data loss
+    const HIGH_WATER = 1 * 1024 * 1024;
 
     // Dynamically gather open channels from REFS (not React state)
     const getOpenChannels = (): RTCDataChannel[] => {
@@ -1044,7 +1114,7 @@ export function useTransferSession() {
         // This ensures every chunk is actually delivered before we close connections
         console.log('[TRANSFER] All chunks queued — waiting for SCTP buffers to drain...');
         const drainAll = async () => {
-          const maxWait = 30000; // 30s max
+          const maxWait = 60000; // 60s max — give more time for SCTP to deliver
           const start = Date.now();
           while (Date.now() - start < maxWait) {
             let totalBuffered = 0;
@@ -1053,7 +1123,7 @@ export function useTransferSession() {
             for (const dc of extraDcsRef.current) {
               if (dc && dc.readyState === 'open') totalBuffered += dc.bufferedAmount;
             }
-            // Update progress as buffers drain (prevents stall at ~80%)
+            // Update progress as buffers drain
             const delivered = Math.max(0, totalSentRef.current - totalBuffered);
             updateProgressRef(delivered, totalBatchSize);
             if (totalBuffered === 0) {
