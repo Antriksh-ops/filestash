@@ -43,7 +43,8 @@ export const saveTransferState = async (state: TransferState) => {
             const transaction = db.transaction(STORE_NAME, 'readwrite');
             const store = transaction.objectStore(STORE_NAME);
             // Strip legacy completedChunks to keep IDB write small
-            const { completedChunks: _, ...leanState } = state;
+            const leanState = { ...state };
+            delete leanState.completedChunks;
             const request = store.put(leanState);
             request.onsuccess = () => resolve();
             request.onerror = () => reject(request.error);
